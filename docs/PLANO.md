@@ -73,3 +73,23 @@ O bot não apaga canais, não concede Administrator e não executa exclusões de
 - Suportar provedores pessoais além do OpenRouter se necessário.
 - Adicionar configuração por cargo, em vez de somente por usuário.
 - Definir política/tempo de retenção e comandos para limpar histórico se a conversa persistente for implementada.
+
+## Correções e melhorias implementadas nesta revisão
+
+- A IA pode retornar diagnóstico sem alteração quando não há uma correção segura; não precisa inventar uma ação para preencher o plano.
+- Exclusão/recriação de cargo exige intenção explícita na mensagem atual. O histórico do tópico não autoriza sozinho uma ação destrutiva, e negações/cancelamentos impedem a inferência determinística.
+- Recriar cargo exige um único cargo e uma única categoria identificáveis pelo pedido; se houver ambiguidade, a inferência automática não gera proposta.
+- O retrato prioriza canais da categoria citada, canais/cargos mencionados e cargos dos membros citados; a lista de canais e cargos não depende mais apenas dos primeiros itens em cache.
+- A recriação copia os overwrites antigos do cargo nos canais alvo, preservando permissões de canal além de ViewChannel/ReadMessageHistory, e só tenta excluir o cargo antigo após criar, configurar e migrar o novo.
+- Se a chamada para excluir o cargo antigo falhar de forma incerta, o bot mantém o novo cargo e orienta conferência manual em vez de tentar removê-lo e arriscar perder o único cargo ativo.
+- O seletor reconhece mais pedidos comuns em português e prioriza modelos gratuitos com ferramentas e capacidade de raciocínio nas tarefas mais complexas. Chamadas têm timeout menor e uma tentativa de fallback de plano limitada.
+- Enquanto aguarda o provedor, o bot renova o indicador de digitação e atualiza a mensagem de progresso. Logs correlacionam etapas por um ID curto sem registrar o texto completo do pedido.
+
+## Próximas melhorias técnicas recomendadas
+
+1. Adicionar testes automatizados para intenção negada, cargos protegidos, IDs inválidos, timeouts, expiração de proposta e falhas em cada etapa da migração.
+2. Adicionar comando de diagnóstico do bot que confira permissões/hierarquia, intents, banco, configuração do modelo e estado das cotas sem alterar o servidor.
+3. Gravar auditoria estruturada por mudança (ator, confirmação, entidades e resultado), com retenção configurável e sem armazenar prompts ou chaves.
+4. Fazer preflight de todas as ações de um plano e mostrar impacto total antes de confirmar; oferecer reversão específica para alterações de permissões quando possível.
+5. Carregar sob demanda os canais/categorias/cargos relacionados e resumir o retrato quando o servidor for grande, mantendo contagem e aviso de dados omitidos.
+6. Considerar fila por servidor e limite de chamadas simultâneas para evitar rajadas, rate limit do Discord/OpenRouter e atrasos em servidores movimentados.

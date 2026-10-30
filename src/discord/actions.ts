@@ -8,7 +8,7 @@ import {
   type Role,
   type TextChannel,
 } from 'discord.js';
-import { SAFE_ROLE_PERMISSION_NAMES, type DiscordAction, type SafeRolePermission } from '../ai/actions.js';
+import type { DiscordAction } from '../ai/actions.js';
 
 export function describeAction(guild: Guild, action: DiscordAction): string {
   if (action.type === 'create_role') {
@@ -100,6 +100,7 @@ export async function applyDiscordAction(
     ].includes(channel.type));
     const preservedPermissions = oldRole.permissions.toArray().filter((permission) => !['Administrator', 'ManageGuild', 'ManageRoles'].includes(permission));
     let replacement: Role | null = null;
+    let oldRoleDeletionStarted = false;
     const migratedMembers: GuildMember[] = [];
     try {
       replacement = await guild.roles.create({
@@ -116,11 +117,11 @@ export async function applyDiscordAction(
       for (const channel of targetChannels) {
         const oldOverwrite = channel.permissionOverwrites.cache.get(oldRole.id);
         const overwrite: PermissionOverwriteOptions = { ViewChannel: true, ReadMessageHistory: true };
-        for (const permission of SAFE_ROLE_PERMISSION_NAMES) {
-          if (permission === 'ViewChannel' || permission === 'ReadMessageHistory') continue;
-          const bit = PermissionFlagsBits[permission];
-          if (oldOverwrite?.allow.has(bit)) overwrite[permission] = true;
-          else if (oldOverwrite?.deny.has(bit)) overwrite[permission] = false;
+        for (const permission of oldOverwrite?.allow.toArray() ?? []) {
+          if (permission !== 'ViewChannel' && permission !== 'ReadMessageHistory') overwrite[permission as keyof PermissionOverwriteOptions] = true;
+        }
+        for (const permission of oldOverwrite?.deny.toArray() ?? []) {
+          if (permission !== 'ViewChannel' && permission !== 'ReadMessageHistory') overwrite[permission as keyof PermissionOverwriteOptions] = false;
         }
         await channel.permissionOverwrites.edit(replacement.id, overwrite, { reason });
       }
@@ -129,9 +130,14 @@ export async function applyDiscordAction(
         await member.roles.add(replacement, reason);
         migratedMembers.push(member);
       }
+      oldRoleDeletionStarted = true;
       await oldRole.delete(reason);
       return `Recriei o cargo <@&${replacement.id}>, migrei ${migratedMembers.length} membros e configurei acesso e leitura do histórico na categoria e nos ${childTextChannels.length} canais de texto.`;
     } catch (error) {
+      if (oldRoleDeletionStarted) {
+        const detail = error instanceof Error ? error.message.slice(0, 180) : 'erro desconhecido';
+        throw new Error(`ROLE_RECREATE_COMMIT_UNCERTAIN: ${detail}; o cargo novo foi mantido para evitar remover o único cargo ativo. Confira os cargos e membros antes de repetir.`);
+      }
       const rollbackErrors: string[] = [];
       if (replacement) {
         const failedReplacement = replacement;

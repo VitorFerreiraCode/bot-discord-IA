@@ -205,6 +205,8 @@ async function processRequest(message: Message): Promise<void> {
   if (message.channelId !== controlChannelId && !isControlThread) return;
   const requestText = message.content.trim();
   if (!requestText) return;
+  const requestId = randomUUID().slice(0, 8);
+  const requestStartedAt = Date.now();
   let responseChannel: TextChannel | ThreadChannel = message.channel as TextChannel | ThreadChannel;
   if (!isControlThread) {
     try {
@@ -265,11 +267,24 @@ async function processRequest(message: Message): Promise<void> {
   }
 
   let progressMessage: Message | null = null;
+  let typingInterval: ReturnType<typeof setInterval> | null = null;
+  let slowNoticeSent = false;
   try {
+    console.info(`[${requestId}] Pedido recebido no servidor ${message.guild.id}, usuário ${message.author.id}, chave ${source}.`);
     progressMessage = await responseChannel.send('⏳ Recebi seu pedido. A IA está analisando; atualizarei esta mensagem com o resultado.');
     await responseChannel.sendTyping();
+    typingInterval = setInterval(() => {
+      void responseChannel.sendTyping().catch(() => null);
+      if (!slowNoticeSent && progressMessage && Date.now() - requestStartedAt > 25_000) {
+        slowNoticeSent = true;
+        void progressMessage.edit('⏳ A análise ainda está em andamento. Estou consultando o modelo gratuito e verificando o estado do servidor.').catch(() => null);
+      }
+    }, 8_000);
+    typingInterval.unref?.();
     const history = await getThreadHistory(message);
-    const result = await planDiscordRequest({ message, apiKey, model: config.modelId, maxOutputTokens: config.maxOutputTokens, history });
+    const result = await planDiscordRequest({ message, apiKey, model: config.modelId, maxOutputTokens: config.maxOutputTokens, history, traceId: requestId });
+    clearInterval(typingInterval);
+    typingInterval = null;
     await recordUsageTokens(usageId, result.inputTokens, result.outputTokens, result.modelId);
     const guildUsage = source === 'central' ? await getGuildMonthlyCentralUsage(message.guild.id).catch(() => null) : null;
     const usageDescription = `${guildUsage === null ? '' : `\n\nUso da chave central neste servidor neste mês: **${guildUsage}/${config.guildMonthlyLimit} pedidos**.`}\n\nModelo gratuito selecionado: \`${result.modelId}\`.`;
@@ -303,7 +318,8 @@ async function processRequest(message: Message): Promise<void> {
       allowedMentions: { parse: [], users: [], roles: [] },
     });
   } catch (error) {
-    console.error(`AI request failed for guild ${message.guild.id}:`, safeError(error));
+    if (typingInterval) clearInterval(typingInterval);
+    console.error(`[${requestId}] AI request failed for guild ${message.guild.id}:`, safeError(error));
     const status = safeError(error);
     let errorMessage: string;
     if (status.includes('HTTP_401')) {
@@ -375,6 +391,8 @@ async function handleChangeButton(interaction: import('discord.js').ButtonIntera
         ? 'Bloqueei a exclusão porque o cargo é de administrador/dono ou é gerenciado pelo Discord.'
         : failure.includes('BOT_GUILD_MEMBERS_INTENT_REQUIRED')
           ? 'Para preservar todos os membros ao recriar o cargo, habilite Server Members Intent no Developer Portal e configure DISCORD_GUILD_MEMBERS_INTENT=true no Railway. Não excluí o cargo antigo.'
+        : failure.includes('ROLE_RECREATE_COMMIT_UNCERTAIN')
+          ? 'A API falhou durante a remoção final do cargo antigo. Mantive o cargo novo para evitar perda de acesso; confira os dois cargos e os membros antes de repetir.'
         : failure.includes('ROLE_RECREATE_FAILED') && failure.includes('ROLLBACK_INCOMPLETE')
           ? 'A substituição falhou e a reversão não terminou por completo. Confira os logs e a lista de cargos/membros antes de tentar de novo.'
         : failure.includes('ROLE_RECREATE_FAILED')

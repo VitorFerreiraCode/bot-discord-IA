@@ -60,8 +60,8 @@ export function selectFreeModelForRequest(input: {
   availableModels: FreeModel[];
 }): string {
   const text = `${input.request}\n${input.history ?? ''}`;
-  const complex = text.length > 350
-    || /\b(?:delete|exclu(?:ir|i|a)|recrie|recriar|crie|criar|cargo|permiss[aã]o|categoria|todos os canais|todos os cargos|migre|migrar|diagn[oó]stico completo|corrija|conserte|arrume|organize|reorganize)\b/i.test(text)
+  const complex = text.length > 250
+    || /\b(?:delete|exclu(?:ir|i|a)|apaga(?:r)?|remov(?:a|er)|recrie|recriar|crie|criar|cargo|permiss[aã]o|categoria|canal|hist[oó]rico|membro|usu[aá]rio|cargo|todos os canais|todos os cargos|migre|migrar|diagn[oó]stico completo|corrija|conserte|arrume|organize|reorganize|configure|configurar|visibilidade|acesso|organiza[cç][aã]o|convite|papel)\b/i.test(text)
     || (text.match(/<[@#&!]\d+>/g)?.length ?? 0) >= 3;
   const preferred = input.availableModels.find((model) => model.id === input.preferredModel);
   if (!complex && preferred) return preferred.id;
@@ -107,7 +107,7 @@ export async function createChatCompletion(input: {
       tool_choice: 'required',
       max_tokens: input.maxOutputTokens,
     }),
-    signal: AbortSignal.timeout(120_000),
+    signal: AbortSignal.timeout(45_000),
   });
   if (!response.ok) {
     const errorBody = await response.text().catch(() => '');
