@@ -15,6 +15,17 @@ export type DiscordAction =
       reason: string;
     }
   | {
+      type: 'create_role';
+      name: string;
+      permissions: Array<'ViewChannel' | 'ReadMessageHistory' | 'SendMessages' | 'Connect' | 'Speak' | 'UseApplicationCommands' | 'AddReactions' | 'EmbedLinks' | 'AttachFiles'>;
+      reason: string;
+    }
+  | {
+      type: 'delete_role';
+      roleId: string;
+      reason: string;
+    }
+  | {
       type: 'create_category';
       name: string;
       reason: string;

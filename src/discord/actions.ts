@@ -7,6 +7,14 @@ import {
 import type { DiscordAction } from '../ai/actions.js';
 
 export function describeAction(guild: Guild, action: DiscordAction): string {
+  if (action.type === 'create_role') {
+    const permissions = action.permissions.length ? action.permissions.join(', ') : 'sem permissões globais adicionais';
+    return `• Criar o cargo **${action.name}** (${permissions}). Motivo: ${action.reason}`;
+  }
+  if (action.type === 'delete_role') {
+    const role = guild.roles.cache.get(action.roleId);
+    return `• Excluir o cargo <@&${action.roleId}>${role ? ` (**${role.name}**)` : ''}. Motivo: ${action.reason}`;
+  }
   if (action.type === 'allow_read_history') {
     const channel = guild.channels.cache.get(action.channelId);
     const target = action.targetType === 'member' ? `<@${action.targetId}>` : `<@&${action.targetId}>`;
@@ -27,10 +35,33 @@ export async function applyDiscordAction(
   action: DiscordAction,
 ): Promise<string> {
   const botMember = guild.members.me;
-  if (!botMember?.permissions.has(PermissionFlagsBits.ManageChannels)) {
-    throw new Error('BOT_MISSING_MANAGE_CHANNELS');
+  const roleAction = action.type === 'create_role' || action.type === 'delete_role';
+  if (!botMember?.permissions.has(roleAction ? PermissionFlagsBits.ManageRoles : PermissionFlagsBits.ManageChannels)) {
+    throw new Error(roleAction ? 'BOT_MISSING_MANAGE_ROLES' : 'BOT_MISSING_MANAGE_CHANNELS');
   }
   const reason = `Bot Discord IA: ${action.reason}`.slice(0, 500);
+
+  if (action.type === 'create_role') {
+    const permissions = action.permissions.map((permission) => PermissionFlagsBits[permission]);
+    const role = await guild.roles.create({ name: action.name, permissions, reason });
+    return `Criei o cargo <@&${role.id}> sem conceder permissões de administração.`;
+  }
+
+  if (action.type === 'delete_role') {
+    const role = await guild.roles.fetch(action.roleId);
+    if (!role || role.id === guild.roles.everyone.id) throw new Error('ROLE_NOT_FOUND_OR_EVERYONE');
+    const owner = await guild.members.fetch(guild.ownerId);
+    const protectedRole = role.managed
+      || role.permissions.has(PermissionFlagsBits.Administrator)
+      || role.permissions.has(PermissionFlagsBits.ManageGuild)
+      || role.permissions.has(PermissionFlagsBits.ManageRoles)
+      || owner.roles.cache.has(role.id)
+      || /(?:^|[^a-z0-9])(?:admin(?:istrator|istrador)?|owner|dono|propriet[aá]rio)(?:$|[^a-z0-9])/i.test(role.name);
+    if (protectedRole) throw new Error('PROTECTED_ROLE');
+    if (!role.editable) throw new Error('ROLE_ABOVE_BOT_HIERARCHY');
+    await role.delete(reason);
+    return `Excluí o cargo **${role.name}**.`;
+  }
 
   if (action.type === 'allow_read_history') {
     if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) throw new Error('BOT_MISSING_MANAGE_ROLES');

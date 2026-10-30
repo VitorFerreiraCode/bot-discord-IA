@@ -367,7 +367,15 @@ async function handleChangeButton(interaction: import('discord.js').ButtonIntera
       console.error(`Approved Discord action failed in guild ${interaction.guild.id}:`, safeError(error));
       const progress = completed.length ? ` Ações aplicadas antes da falha: ${completed.join(' ')}` : '';
       const topicRows = interaction.channel?.isThread() ? topicChoiceRows() : [];
-      await interaction.editReply({ content: `Não consegui concluir todas as ações. Já aplicadas: ${completed.length}/${actions.length}.${progress} Confira as permissões e a hierarquia do cargo do bot.${interaction.channel?.isThread() ? topicClosingQuestion : ''}`, embeds: [], components: topicRows });
+      const failure = safeError(error);
+      const reason = failure.includes('PROTECTED_ROLE')
+        ? 'Bloqueei a exclusão porque o cargo é de administrador/dono ou é gerenciado pelo Discord.'
+        : failure.includes('ROLE_ABOVE_BOT_HIERARCHY')
+          ? 'O cargo está acima do cargo do bot na hierarquia do servidor.'
+          : failure.includes('BOT_MISSING_MANAGE_ROLES')
+            ? 'O bot precisa da permissão Gerenciar cargos.'
+            : 'Confira as permissões do bot e a hierarquia de cargos.';
+      await interaction.editReply({ content: `Não consegui concluir todas as ações. Já aplicadas: ${completed.length}/${actions.length}.${progress} ${reason}${interaction.channel?.isThread() ? topicClosingQuestion : ''}`, embeds: [], components: topicRows });
       return;
     }
   }

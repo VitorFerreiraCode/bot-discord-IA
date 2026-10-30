@@ -34,6 +34,7 @@ Bot de Discord sem aplicação web para entender pedidos em linguagem natural, c
 
 - Permitir/remover visualização de um canal ou categoria para um membro ou cargo específico.
 - Permitir leitura do histórico de um canal/categoria para um membro ou cargo específico.
+- Criar cargos com permissões básicas seguras e excluir cargos comuns após confirmação explícita; cargos administrativos, do dono, `@everyone` e gerenciados são protegidos.
 - Criar categoria.
 - Criar canal de texto público (usando as permissões da categoria, se houver) ou privado ao solicitante e administradores.
 

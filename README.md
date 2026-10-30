@@ -9,11 +9,11 @@ Bot de Discord sem aplicação web para entender pedidos em linguagem natural, d
 - Configuração global com `/bot-configurar`: o operador informa os limites centrais, o padrão inicia em `openrouter/free` e pode escolher outro modelo gratuito compatível com chamadas de ferramenta.
 - Cada pedido no canal privado abre um tópico vinculado à mensagem; as respostas ficam no tópico para manter `#comandos-do-bot` sem respostas acumuladas. O bot inclui até 20 mensagens recentes do tópico no contexto.
 - Respostas com a chave central mostram a contagem mensal usada pelo servidor no próprio resultado, sem uma mensagem adicional de aviso para cada pedido.
-- O bot explica o diagnóstico e propõe ações para visibilidade e leitura de histórico, além de criar categorias/canais. Só aplica mudanças após clicar em **Confirmar alterações**. Propostas expiram em cinco minutos.
+- O bot explica o diagnóstico e propõe ações para visibilidade e leitura de histórico, além de criar categorias/canais/cargos e excluir cargos comuns. Só aplica mudanças após clicar em **Confirmar alterações**. Propostas expiram em cinco minutos.
 - Chaves pessoais do OpenRouter podem ser coladas no canal privado: o bot valida a chave, salva cifrada e apaga a mensagem. Os pedidos daquela pessoa usam a chave pessoal sem fallback silencioso para a central. `/bot-chave-remover` remove a chave.
 - Limites de consumo da chave central são solicitados ao operador na configuração; não há quotas fixas codificadas.
 
-O MVP de ações é deliberadamente limitado a visibilidade e leitura de histórico em canais/categorias para membro/cargo e criação de categorias/canais de texto. Remoções, cargos, permissões administrativas e outras automações ainda não são executados. O bot consulta menções e a estrutura para o diagnóstico; se o alvo não estiver claro, mencione a pessoa/canal/cargo explicitamente no pedido.
+O MVP pode ajustar visibilidade e leitura de histórico em canais/categorias, criar categorias/canais/cargos básicos e excluir cargos comuns. O bot bloqueia a exclusão de `@everyone`, cargos com permissões administrativas, cargos atribuídos ao dono e cargos gerenciados por integrações. Toda exclusão exige confirmação explícita. O bot consulta menções e a estrutura para o diagnóstico; se o alvo não estiver claro, mencione a pessoa/canal/cargo explicitamente no pedido.
 
 ## 1. Criar e configurar o app no Discord
 
