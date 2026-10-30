@@ -1,8 +1,10 @@
 import {
   ChannelType,
   GatewayIntentBits,
+  GuildOnboardingMode,
   PermissionFlagsBits,
   type Guild,
+  type GuildOnboardingPromptData,
   type GuildMember,
   type PermissionOverwriteOptions,
   type Role,
@@ -18,6 +20,7 @@ interface PermissionOverwriteState {
 }
 
 export function describeAction(guild: Guild, action: DiscordAction): string {
+  if (action.type === 'ensure_minecraft_onboarding') return `• Criar o cargo **Minecraft** se estiver ausente e adicionar uma opção de resposta no onboarding que atribui esse cargo. As perguntas existentes e o cargo Ligeirinho serão preservados. Motivo: ${action.reason}`;
   if (action.type === 'create_role') {
     const permissions = action.permissions.length ? action.permissions.join(', ') : 'sem permissões globais adicionais';
     return `• Criar o cargo **${action.name}** (${permissions}). Motivo: ${action.reason}`;
@@ -289,7 +292,7 @@ export async function applyDiscordAction(
   action: DiscordAction,
 ): Promise<string> {
   const botMember = guild.members.me;
-  const roleAction = action.type === 'create_role' || action.type === 'delete_role';
+  const roleAction = action.type === 'create_role' || action.type === 'delete_role' || action.type === 'ensure_minecraft_onboarding';
   const needsManageRoles = roleAction || action.type === 'allow_read_history' || action.type === 'set_channel_permissions' || action.type === 'set_category_permissions' || action.type === 'set_channel_visibility' || action.type === 'create_text_channel' || action.type === 'recreate_role_for_category';
   const needsManageChannels = !roleAction && action.type !== 'set_voice_mute';
   if (!botMember) throw new Error('BOT_MEMBER_NOT_CACHED');
@@ -302,6 +305,74 @@ export async function applyDiscordAction(
     const permissions = action.permissions.map((permission) => PermissionFlagsBits[permission]);
     const role = await guild.roles.create({ name: action.name, permissions, reason });
     return `Criei o cargo <@&${role.id}> sem conceder permissões de administração.`;
+  }
+
+  if (action.type === 'ensure_minecraft_onboarding') {
+    if (!botMember.permissions.has(PermissionFlagsBits.ManageGuild)) throw new Error('BOT_MISSING_MANAGE_GUILD');
+    // Fetch and validate onboarding first so a failed/unsupported setup never leaves an orphan role.
+    const onboarding = await guild.fetchOnboarding();
+    const existingPrompts = [...onboarding.prompts.values()];
+    const promptIndex = existingPrompts.findIndex((prompt) => /jogos?|games?/i.test(prompt.title));
+    if (promptIndex < 0 && existingPrompts.length >= 5) throw new Error('ONBOARDING_PROMPT_LIMIT');
+    const gamePrompt = promptIndex >= 0 ? existingPrompts[promptIndex]! : null;
+    if (gamePrompt && gamePrompt.options.size >= 25 && ![...gamePrompt.options.values()].some((option) => /minecraft/i.test(option.title))) throw new Error('ONBOARDING_OPTION_LIMIT');
+
+    const normalize = (value: string) => value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase().trim();
+    let minecraftRole = guild.roles.cache.find((role) => normalize(role.name) === 'minecraft');
+    let createdRole = false;
+    if (!minecraftRole) {
+      minecraftRole = await guild.roles.create({ name: 'Minecraft', permissions: [], reason });
+      createdRole = true;
+    }
+
+    const prompts: GuildOnboardingPromptData[] = existingPrompts.map((prompt) => ({
+      id: prompt.id,
+      title: prompt.title,
+      singleSelect: prompt.singleSelect,
+      required: prompt.required,
+      inOnboarding: prompt.inOnboarding,
+      type: prompt.type,
+      options: [...prompt.options.values()].map((option) => ({
+        id: option.id,
+        title: option.title,
+        description: option.description ?? undefined,
+        roles: [...option.roles.keys()],
+        channels: [...option.channels.keys()],
+        emoji: option.emoji?.toString() ?? undefined,
+      })),
+    }));
+    if (gamePrompt) {
+      const prompt = prompts[promptIndex]!;
+      const options = [...(prompt.options as readonly import('discord.js').GuildOnboardingPromptOptionData[])];
+      const gameOption = options.find((option) => /minecraft/i.test(option.title));
+      if (gameOption) (gameOption as { roles?: string[] }).roles = [...new Set([...(gameOption.roles as readonly string[] | undefined ?? []), minecraftRole.id])];
+      else options.push({ title: 'Minecraft', description: 'Receba o cargo de quem joga Minecraft.', roles: [minecraftRole.id], channels: [] });
+      prompt.options = options;
+    } else {
+      prompts.push({
+        title: 'Quais jogos você joga?',
+        singleSelect: false,
+        required: false,
+        inOnboarding: true,
+        options: [
+          { title: 'Minecraft', description: 'Receba o cargo de quem joga Minecraft.', roles: [minecraftRole.id], channels: [] },
+          { title: 'Outro jogo / não listado', roles: [], channels: [] },
+        ],
+      });
+    }
+    try {
+      await guild.editOnboarding({
+        prompts,
+        defaultChannels: [...onboarding.defaultChannels.keys()],
+        enabled: true,
+        mode: GuildOnboardingMode.OnboardingAdvanced,
+        reason,
+      });
+    } catch (error) {
+      if (createdRole) await minecraftRole.delete('Remover cargo após falha ao configurar onboarding').catch(() => null);
+      throw error;
+    }
+    return `${createdRole ? 'Criei' : 'Encontrei'} o cargo <@&${minecraftRole.id}> e configurei a opção Minecraft no onboarding. Preservei ${existingPrompts.length} pergunta(s) existente(s); o cargo Ligeirinho não foi alterado.`;
   }
 
   if (action.type === 'delete_role') {

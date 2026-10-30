@@ -6,9 +6,12 @@ import {
   EmbedBuilder,
   Events,
   GatewayIntentBits,
+  ModalBuilder,
   PermissionFlagsBits,
   REST,
   Routes,
+  TextInputBuilder,
+  TextInputStyle,
   type ChatInputCommandInteraction,
   type Guild,
   type Message,
@@ -267,6 +270,9 @@ function topicChoiceRows(): ActionRowBuilder<ButtonBuilder>[] {
   return [new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId('topic:save').setLabel('Salvar tópico').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('topic:close').setLabel('Encerrar tópico').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId('topic:edit').setLabel('Editar pedido').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('topic:rename').setLabel('Renomear').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('topic:summary').setLabel('Resumo').setStyle(ButtonStyle.Secondary),
   )];
 }
 
@@ -300,13 +306,13 @@ async function getThreadHistory(message: Message): Promise<string | undefined> {
   return entries.slice(-20).join('\n').slice(-8000) || undefined;
 }
 
-async function processRequest(message: Message): Promise<void> {
+async function processRequest(message: Message, requestTextOverride?: string, requesterId = message.author.id): Promise<void> {
   if (!message.guild) return;
-  if (!await memberCanUse(message.guild, message.author.id)) return;
+  if (!await memberCanUse(message.guild, requesterId)) return;
   const controlChannelId = await getControlChannel(message.guild.id);
   const isControlThread = message.channel.isThread() && message.channel.parentId === controlChannelId;
   if (message.channelId !== controlChannelId && !isControlThread) return;
-  const requestText = message.content.trim();
+  const requestText = (requestTextOverride ?? message.content).trim();
   if (!requestText) return;
   const requestId = randomUUID().slice(0, 8);
   const requestStartedAt = Date.now();
@@ -328,7 +334,7 @@ async function processRequest(message: Message): Promise<void> {
 
   let apiKey: string;
   let source: 'central' | 'personal';
-  const encryptedKey = await getUserKey(message.author.id);
+  const encryptedKey = await getUserKey(requesterId);
   if (encryptedKey) {
     try {
       apiKey = decryptSecret(encryptedKey);
@@ -357,7 +363,7 @@ async function processRequest(message: Message): Promise<void> {
 
   let usageId: string;
   try {
-    usageId = await reserveUsage(message.guild.id, message.author.id, source, config.modelId, config);
+    usageId = await reserveUsage(message.guild.id, requesterId, source, config.modelId, config);
   } catch (error) {
     if (error instanceof Error && error.message === 'USER_DAILY_LIMIT') {
       await sendTopicMessage(responseChannel, 'Você atingiu o limite diário configurado para a chave central. Cadastre sua chave pessoal ou aguarde a renovação do limite.');
@@ -385,7 +391,7 @@ async function processRequest(message: Message): Promise<void> {
     }, 8_000);
     typingInterval.unref?.();
     const history = await getThreadHistory(message);
-    const result = await planDiscordRequest({ message, apiKey, model: config.modelId, maxOutputTokens: config.maxOutputTokens, history, traceId: requestId });
+    const result = await planDiscordRequest({ message, apiKey, model: config.modelId, maxOutputTokens: config.maxOutputTokens, history, traceId: requestId, requestTextOverride });
     clearInterval(typingInterval);
     typingInterval = null;
     await recordUsageTokens(usageId, result.inputTokens, result.outputTokens, result.modelId);
@@ -407,7 +413,7 @@ async function processRequest(message: Message): Promise<void> {
       id,
       guildId: message.guild.id,
       channelId: responseChannel.id,
-      requestedBy: message.author.id,
+      requestedBy: requesterId,
       summary: result.plan.summary,
       actions,
       expiresAt,
@@ -535,6 +541,14 @@ async function handleChangeButton(interaction: import('discord.js').ButtonIntera
             ? 'A correção da categoria falhou; reverti as permissões que já tinham sido alteradas. Confira o log se o problema persistir.'
           : failure.includes('BOT_MISSING_MANAGE_ROLES')
             ? 'O bot precisa da permissão Gerenciar cargos.'
+            : failure.includes('BOT_MISSING_MANAGE_GUILD')
+              ? 'O bot precisa da permissão Gerenciar servidor para editar o onboarding.'
+              : failure.includes('ONBOARDING_PROMPT_LIMIT')
+                ? 'O onboarding já tem o limite de perguntas do Discord. Nenhuma pergunta foi removida; apague ou combine uma pergunta manualmente e tente novamente.'
+                : failure.includes('ONBOARDING_OPTION_LIMIT')
+                  ? 'A pergunta de jogos já atingiu o limite de opções do Discord. Nenhuma pergunta foi removida; ajuste as opções manualmente e tente novamente.'
+                  : failure.includes('50035') || failure.includes('ONBOARDING')
+                    ? 'O Discord recusou a alteração do onboarding. Confirme que a Comunidade e o onboarding estão ativados e que os canais padrão atendem aos requisitos do Discord. Confira o log se persistir.'
             : failure.includes('BOT_MISSING_MUTE_MEMBERS')
               ? 'Para remover o server mute solicitado, o bot precisa da permissão Silenciar membros (Mute Members).'
             : 'Confira as permissões do bot e a hierarquia de cargos.';
@@ -601,6 +615,38 @@ async function handleTopicButton(interaction: import('discord.js').ButtonInterac
     await interaction.reply({ content: 'Tópico salvo. O histórico permanece disponível no Discord, mesmo que seja arquivado por inatividade.', ephemeral: true });
     return;
   }
+  if (action === 'edit') {
+    const modal = new ModalBuilder().setCustomId('topic-edit-submit').setTitle('Editar pedido para a IA');
+    const field = new TextInputBuilder().setCustomId('request').setLabel('Descreva o que você quer corrigir').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(3000).setValue((await thread.messages.fetch({ limit: 30 }).catch(() => null))?.filter((message) => !message.author.bot).sort((a, b) => b.createdTimestamp - a.createdTimestamp).first()?.content.slice(0, 3000) ?? '');
+    modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(field));
+    await interaction.showModal(modal);
+    return;
+  }
+  if (action === 'rename') {
+    const modal = new ModalBuilder().setCustomId('topic-rename-submit').setTitle('Renomear tópico');
+    const field = new TextInputBuilder().setCustomId('name').setLabel('Novo nome do tópico').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100).setValue(thread.name.slice(0, 100));
+    modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(field));
+    await interaction.showModal(modal);
+    return;
+  }
+  if (action === 'summary') {
+    await interaction.deferReply({ ephemeral: true });
+    const messages = await thread.messages.fetch({ limit: 50 }).catch(() => null);
+    if (!messages) {
+      await interaction.editReply('Não consegui ler as mensagens deste tópico. Confira se o bot tem acesso ao histórico.');
+      return;
+    }
+    const ordered = [...messages.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+    const requests = ordered.filter((message) => !message.author.bot && message.content.trim()).slice(-8).map((message) => `• ${message.content.replace(/\s+/g, ' ').slice(0, 230)}`);
+    const outcomes = ordered.filter((message) => message.author.bot && (message.content.trim() || message.embeds.length)).slice(-5).map((message) => {
+      const text = [message.content, ...message.embeds.map((embed) => `${embed.title ?? ''} ${embed.description ?? ''}`)].join(' ').replace(/\s+/g, ' ').trim();
+      return text ? `• ${text.slice(0, 230)}` : '';
+    }).filter(Boolean);
+    const summary = [`**Pedidos**\n${requests.join('\n') || '• Nenhum pedido de texto encontrado.'}`, `**Respostas e andamento**\n${outcomes.join('\n') || '• Ainda sem resposta registrada.'}`].join('\n\n').slice(0, 1700);
+    await sendTopicMessage(thread, `**Resumo do tópico**\n${summary}`);
+    await interaction.editReply('Resumo publicado neste tópico.');
+    return;
+  }
   await interaction.reply({ content: 'Encerrando o tópico. O histórico continuará salvo no Discord.', ephemeral: true });
   await thread.setArchived(true, `Tópico encerrado por ${interaction.user.tag}`).catch(async (error) => {
     console.error(`Could not archive request thread ${thread.id}:`, safeError(error));
@@ -635,6 +681,37 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.isModalSubmit() && interaction.customId === 'service-config-modal') {
       await finishSetupModal(interaction);
+      return;
+    }
+    if (interaction.isModalSubmit() && (interaction.customId === 'topic-edit-submit' || interaction.customId === 'topic-rename-submit')) {
+      const thread = interaction.channel;
+      if (!interaction.guild || !thread?.isThread() || thread.parentId !== await getControlChannel(interaction.guild.id) || !await memberCanUse(interaction.guild, interaction.user.id)) {
+        await interaction.reply({ content: 'Você não está autorizado a editar este tópico.', ephemeral: true });
+        return;
+      }
+      if (interaction.customId === 'topic-rename-submit') {
+        const name = interaction.fields.getTextInputValue('name').trim();
+        if (!name) {
+          await interaction.reply({ content: 'Informe um nome para o tópico.', ephemeral: true });
+          return;
+        }
+        await thread.setName(name.slice(0, 100), `Renomeado por ${interaction.user.tag}`);
+        await interaction.reply({ content: `Tópico renomeado para **${name.slice(0, 100)}**.`, ephemeral: true });
+        return;
+      }
+      const request = interaction.fields.getTextInputValue('request').trim();
+      if (!request) {
+        await interaction.reply({ content: 'O pedido não pode ficar vazio.', ephemeral: true });
+        return;
+      }
+      const messages = await thread.messages.fetch({ limit: 50 }).catch(() => null);
+      const original = messages?.filter((message) => !message.author.bot && message.content.trim()).sort((a, b) => b.createdTimestamp - a.createdTimestamp).first();
+      if (!original) {
+        await interaction.reply({ content: 'Não encontrei uma mensagem de pedido para editar. Envie o pedido novamente no tópico.', ephemeral: true });
+        return;
+      }
+      await interaction.reply({ content: 'Pedido atualizado. Vou analisar a nova descrição agora.', ephemeral: true });
+      await processRequest(original, request, interaction.user.id);
       return;
     }
     if (interaction.isStringSelectMenu() && interaction.customId === 'service-model-select') {

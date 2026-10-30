@@ -95,18 +95,21 @@ export async function createChatCompletion(input: {
   model: string;
   maxOutputTokens: number;
   messages: Array<{ role: 'system' | 'user'; content: string }>;
-  tools: unknown[];
+  tools?: unknown[];
 }): Promise<ChatCompletionResult> {
+  const payload: Record<string, unknown> = {
+    model: input.model,
+    messages: input.messages,
+    max_tokens: input.maxOutputTokens,
+  };
+  if (input.tools?.length) {
+    payload.tools = input.tools;
+    payload.tool_choice = 'required';
+  }
   const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: headers(input.apiKey),
-    body: JSON.stringify({
-      model: input.model,
-      messages: input.messages,
-      tools: input.tools,
-      tool_choice: 'required',
-      max_tokens: input.maxOutputTokens,
-    }),
+    body: JSON.stringify(payload),
     signal: AbortSignal.timeout(45_000),
   });
   if (!response.ok) {

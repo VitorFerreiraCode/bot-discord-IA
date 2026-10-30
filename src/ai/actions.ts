@@ -61,6 +61,10 @@ export type DiscordAction =
       reason: string;
     }
   | {
+      type: 'ensure_minecraft_onboarding';
+      reason: string;
+    }
+  | {
       type: 'recreate_role_for_category';
       roleId: string;
       categoryId: string;
