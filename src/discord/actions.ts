@@ -20,7 +20,12 @@ interface PermissionOverwriteState {
 }
 
 export function describeAction(guild: Guild, action: DiscordAction): string {
-  if (action.type === 'ensure_minecraft_onboarding') return `• Criar o cargo **Minecraft** se estiver ausente e adicionar uma opção de resposta no onboarding que atribui esse cargo. As perguntas existentes e o cargo Ligeirinho serão preservados. Motivo: ${action.reason}`;
+  if (action.type === 'configure_onboarding_question') return `• Configurar a pergunta **${action.title}** com ${action.options.length} opção(ões); onboarding ${action.enabled ? 'ativado' : 'desativado'}. Perguntas e opções existentes serão preservadas. Motivo: ${action.reason}`;
+  if (action.type === 'edit_channel') return `• Editar <#${action.channelId}>: ${Object.entries(action.changes).map(([key, value]) => `${key} → ${String(value)}`).join(', ')}. Motivo: ${action.reason}`;
+  if (action.type === 'edit_role') return `• Editar <@&${action.roleId}>: ${Object.keys(action.changes).join(', ')}. Motivo: ${action.reason}`;
+  if (action.type === 'set_member_role') return `• ${action.assigned ? 'Atribuir' : 'Remover'} o cargo <@&${action.roleId}> ${action.assigned ? 'a' : 'de'} <@${action.memberId}>. Motivo: ${action.reason}`;
+  if (action.type === 'delete_channel') return `• Excluir <#${action.channelId}>${guild.channels.cache.get(action.channelId) && 'name' in guild.channels.cache.get(action.channelId)! ? ` (${(guild.channels.cache.get(action.channelId) as {name:string}).name})` : ''}. Essa ação não pode ser desfeita. Motivo: ${action.reason}`;
+  if (action.type === 'edit_welcome_screen') return `• Atualizar a tela de boas-vindas do servidor${action.enabled === undefined ? '' : action.enabled ? ' e ativá-la' : ' e desativá-la'}${action.description ? `: ${action.description}` : ''}. Motivo: ${action.reason}`;
   if (action.type === 'create_role') {
     const permissions = action.permissions.length ? action.permissions.join(', ') : 'sem permissões globais adicionais';
     return `• Criar o cargo **${action.name}** (${permissions}). Motivo: ${action.reason}`;
@@ -292,40 +297,38 @@ export async function applyDiscordAction(
   action: DiscordAction,
 ): Promise<string> {
   const botMember = guild.members.me;
-  const roleAction = action.type === 'create_role' || action.type === 'delete_role' || action.type === 'ensure_minecraft_onboarding';
+  const roleAction = action.type === 'create_role' || action.type === 'delete_role' || action.type === 'edit_role' || action.type === 'set_member_role';
   const needsManageRoles = roleAction || action.type === 'allow_read_history' || action.type === 'set_channel_permissions' || action.type === 'set_category_permissions' || action.type === 'set_channel_visibility' || action.type === 'create_text_channel' || action.type === 'recreate_role_for_category';
-  const needsManageChannels = !roleAction && action.type !== 'set_voice_mute';
+  const needsManageChannels = ['allow_read_history', 'set_channel_permissions', 'set_category_permissions', 'set_channel_visibility', 'create_category', 'create_text_channel', 'edit_channel', 'delete_channel', 'recreate_role_for_category'].includes(action.type);
   if (!botMember) throw new Error('BOT_MEMBER_NOT_CACHED');
   if (needsManageRoles && !botMember.permissions.has(PermissionFlagsBits.ManageRoles)) throw new Error('BOT_MISSING_MANAGE_ROLES');
   if (needsManageChannels && !botMember.permissions.has(PermissionFlagsBits.ManageChannels)) throw new Error('BOT_MISSING_MANAGE_CHANNELS');
   if (action.type === 'set_voice_mute' && !botMember.permissions.has(PermissionFlagsBits.MuteMembers)) throw new Error('BOT_MISSING_MUTE_MEMBERS');
   const reason = `Bot Discord IA: ${action.reason}`.slice(0, 500);
 
-  if (action.type === 'create_role') {
-    const permissions = action.permissions.map((permission) => PermissionFlagsBits[permission]);
-    const role = await guild.roles.create({ name: action.name, permissions, reason });
-    return `Criei o cargo <@&${role.id}> sem conceder permissões de administração.`;
-  }
-
-  if (action.type === 'ensure_minecraft_onboarding') {
+  if (action.type === 'configure_onboarding_question') {
     if (!botMember.permissions.has(PermissionFlagsBits.ManageGuild)) throw new Error('BOT_MISSING_MANAGE_GUILD');
-    // Fetch and validate onboarding first so a failed/unsupported setup never leaves an orphan role.
     const onboarding = await guild.fetchOnboarding();
-    const existingPrompts = [...onboarding.prompts.values()];
-    const promptIndex = existingPrompts.findIndex((prompt) => /jogos?|games?/i.test(prompt.title));
-    if (promptIndex < 0 && existingPrompts.length >= 5) throw new Error('ONBOARDING_PROMPT_LIMIT');
-    const gamePrompt = promptIndex >= 0 ? existingPrompts[promptIndex]! : null;
-    if (gamePrompt && gamePrompt.options.size >= 25 && ![...gamePrompt.options.values()].some((option) => /minecraft/i.test(option.title))) throw new Error('ONBOARDING_OPTION_LIMIT');
-
     const normalize = (value: string) => value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase().trim();
-    let minecraftRole = guild.roles.cache.find((role) => normalize(role.name) === 'minecraft');
-    let createdRole = false;
-    if (!minecraftRole) {
-      minecraftRole = await guild.roles.create({ name: 'Minecraft', permissions: [], reason });
-      createdRole = true;
-    }
-
-    const prompts: GuildOnboardingPromptData[] = existingPrompts.map((prompt) => ({
+    const prompts = [...onboarding.prompts.values()];
+    const matchingPromptIndex = prompts.findIndex((prompt) => normalize(prompt.title) === normalize(action.title));
+    if (matchingPromptIndex < 0 && prompts.length >= 5) throw new Error('ONBOARDING_PROMPT_LIMIT');
+    const existingPrompt = matchingPromptIndex >= 0 ? prompts[matchingPromptIndex]! : null;
+    if (existingPrompt && existingPrompt.options.size + action.options.filter((wanted) => ![...existingPrompt.options.values()].some((option) => normalize(option.title) === normalize(wanted.title))).length > 25) throw new Error('ONBOARDING_OPTION_LIMIT');
+    const desiredOptions = action.options.map((option) => {
+      const roleIds = option.roleNames.map((name) => {
+        const matches = [...guild.roles.cache.values()].filter((role) => normalize(role.name) === normalize(name));
+        if (matches.length !== 1 || !matches[0]!.editable) throw new Error(`ONBOARDING_ROLE_NOT_FOUND:${name}`);
+        return matches[0]!.id;
+      });
+      const channelIds = option.channelNames.map((name) => {
+        const matches = [...guild.channels.cache.values()].filter((channel) => 'name' in channel && normalize(channel.name) === normalize(name));
+        if (matches.length !== 1) throw new Error(`ONBOARDING_CHANNEL_NOT_FOUND:${name}`);
+        return matches[0]!.id;
+      });
+      return { title: option.title, description: option.description, roles: roleIds, channels: channelIds };
+    });
+    const serializedPrompts: GuildOnboardingPromptData[] = prompts.map((prompt) => ({
       id: prompt.id,
       title: prompt.title,
       singleSelect: prompt.singleSelect,
@@ -333,46 +336,81 @@ export async function applyDiscordAction(
       inOnboarding: prompt.inOnboarding,
       type: prompt.type,
       options: [...prompt.options.values()].map((option) => ({
-        id: option.id,
-        title: option.title,
-        description: option.description ?? undefined,
-        roles: [...option.roles.keys()],
-        channels: [...option.channels.keys()],
-        emoji: option.emoji?.toString() ?? undefined,
+        id: option.id, title: option.title, description: option.description ?? undefined,
+        roles: [...option.roles.keys()], channels: [...option.channels.keys()], emoji: option.emoji?.toString() ?? undefined,
       })),
     }));
-    if (gamePrompt) {
-      const prompt = prompts[promptIndex]!;
-      const options = [...(prompt.options as readonly import('discord.js').GuildOnboardingPromptOptionData[])];
-      const gameOption = options.find((option) => /minecraft/i.test(option.title));
-      if (gameOption) (gameOption as { roles?: string[] }).roles = [...new Set([...(gameOption.roles as readonly string[] | undefined ?? []), minecraftRole.id])];
-      else options.push({ title: 'Minecraft', description: 'Receba o cargo de quem joga Minecraft.', roles: [minecraftRole.id], channels: [] });
-      prompt.options = options;
+    if (existingPrompt) {
+      const promptData = serializedPrompts[matchingPromptIndex]!;
+      const options = [...(promptData.options as readonly import('discord.js').GuildOnboardingPromptOptionData[])];
+      for (const desired of desiredOptions) {
+        const option = options.find((entry) => normalize(entry.title) === normalize(desired.title));
+        if (option) {
+          (option as { roles?: string[] }).roles = [...new Set([...(option.roles as readonly string[] | undefined ?? []), ...desired.roles])];
+          (option as { channels?: string[] }).channels = [...new Set([...(option.channels as readonly string[] | undefined ?? []), ...desired.channels])];
+        } else options.push({ title: desired.title, description: desired.description, roles: desired.roles, channels: desired.channels });
+      }
+      promptData.options = options;
+      promptData.required = action.required;
+      promptData.singleSelect = action.singleSelect;
+      promptData.inOnboarding = true;
     } else {
-      prompts.push({
-        title: 'Quais jogos você joga?',
-        singleSelect: false,
-        required: false,
-        inOnboarding: true,
-        options: [
-          { title: 'Minecraft', description: 'Receba o cargo de quem joga Minecraft.', roles: [minecraftRole.id], channels: [] },
-          { title: 'Outro jogo / não listado', roles: [], channels: [] },
-        ],
-      });
+      serializedPrompts.push({ title: action.title, singleSelect: action.singleSelect, required: action.required, inOnboarding: true, options: [
+        ...desiredOptions.map((option) => ({ title: option.title, description: option.description, roles: option.roles, channels: option.channels })),
+      ] });
     }
-    try {
-      await guild.editOnboarding({
-        prompts,
-        defaultChannels: [...onboarding.defaultChannels.keys()],
-        enabled: true,
-        mode: GuildOnboardingMode.OnboardingAdvanced,
-        reason,
-      });
-    } catch (error) {
-      if (createdRole) await minecraftRole.delete('Remover cargo após falha ao configurar onboarding').catch(() => null);
-      throw error;
-    }
-    return `${createdRole ? 'Criei' : 'Encontrei'} o cargo <@&${minecraftRole.id}> e configurei a opção Minecraft no onboarding. Preservei ${existingPrompts.length} pergunta(s) existente(s); o cargo Ligeirinho não foi alterado.`;
+    await guild.editOnboarding({ prompts: serializedPrompts, defaultChannels: [...onboarding.defaultChannels.keys()], enabled: action.enabled, mode: GuildOnboardingMode.OnboardingAdvanced, reason });
+    return `Atualizei o onboarding: pergunta **${action.title}** com ${action.options.length} opção(ões). As demais perguntas foram preservadas.`;
+  }
+
+  if (action.type === 'edit_channel') {
+    const channel = await guild.channels.fetch(action.channelId);
+    if (!channel || !('permissionOverwrites' in channel)) throw new Error('CHANNEL_NOT_FOUND');
+    const { parentId, ...channelChanges } = action.changes;
+    await channel.edit({ ...channelChanges, ...(parentId === undefined ? {} : { parent: parentId }), reason });
+    return `Atualizei as propriedades de #${channel.name}.`;
+  }
+
+  if (action.type === 'edit_role') {
+    const role = await guild.roles.fetch(action.roleId);
+    if (!role || !role.editable || roleIsProtectedAtRuntime(guild, role)) throw new Error('PROTECTED_ROLE');
+    const changes = { ...action.changes, ...(action.changes.permissions ? { permissions: action.changes.permissions.map((permission) => PermissionFlagsBits[permission]) } : {}) };
+    await role.edit({ ...changes, reason });
+    return `Atualizei o cargo **${role.name}**.`;
+  }
+
+  if (action.type === 'set_member_role') {
+    const member = await guild.members.fetch(action.memberId);
+    const role = await guild.roles.fetch(action.roleId);
+    if (!role || !role.editable || roleIsProtectedAtRuntime(guild, role)) throw new Error('PROTECTED_ROLE');
+    if (action.assigned) await member.roles.add(role, reason);
+    else await member.roles.remove(role, reason);
+    return `${action.assigned ? 'Atribuí' : 'Removi'} o cargo **${role.name}** ${action.assigned ? 'de' : 'de'} ${member.displayName}.`;
+  }
+
+  if (action.type === 'delete_channel') {
+    const channel = await guild.channels.fetch(action.channelId);
+    if (!channel) throw new Error('INVALID_CHANNEL_DELETION_TARGET');
+    const label = channel.name;
+    await channel.delete(reason);
+    return `Excluí o canal/categoria **${label}**.`;
+  }
+
+  if (action.type === 'edit_welcome_screen') {
+    if (!botMember.permissions.has(PermissionFlagsBits.ManageGuild)) throw new Error('BOT_MISSING_MANAGE_GUILD');
+    const current = await guild.fetchWelcomeScreen();
+    await guild.editWelcomeScreen({
+      enabled: action.enabled ?? current.enabled,
+      description: action.description ?? current.description ?? undefined,
+      welcomeChannels: action.welcomeChannels?.map((entry) => ({ channel: entry.channelId, description: entry.description, emoji: entry.emoji })) ?? [...current.welcomeChannels.values()].flatMap((entry) => entry.channel ? [{ channel: entry.channel.id, description: entry.description, emoji: entry.emoji?.toString() ?? undefined }] : []),
+    });
+    return 'Atualizei a tela de boas-vindas do servidor.';
+  }
+
+  if (action.type === 'create_role') {
+    const permissions = action.permissions.map((permission) => PermissionFlagsBits[permission]);
+    const role = await guild.roles.create({ name: action.name, permissions, reason });
+    return `Criei o cargo <@&${role.id}> sem conceder permissões de administração.`;
   }
 
   if (action.type === 'delete_role') {

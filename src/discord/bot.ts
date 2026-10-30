@@ -257,6 +257,11 @@ function auditMetadata(actions: DiscordAction[]): unknown[] {
     if ('visible' in action) entry.visible = action.visible;
     if ('muted' in action) entry.muted = action.muted;
     if ('name' in action) entry.name = action.name;
+    if (action.type === 'edit_channel') entry.changedFields = Object.keys(action.changes);
+    if (action.type === 'edit_role') entry.changedFields = Object.keys(action.changes);
+    if (action.type === 'set_member_role') entry.assigned = action.assigned;
+    if (action.type === 'configure_onboarding_question') entry.onboardingQuestion = action.title.slice(0, 100);
+    if (action.type === 'edit_welcome_screen') entry.welcomeScreenChanged = true;
     return entry;
   });
 }
