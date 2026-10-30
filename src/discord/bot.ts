@@ -241,16 +241,17 @@ async function processRequest(message: Message): Promise<void> {
     return;
   }
 
+  let progressMessage: Message | null = null;
   try {
     if (!isControlThread && shouldOpenThread(requestText)) {
       try {
         const title = requestText.replace(/<[@#&!]\d+>/g, '').replace(/[^\p{L}\p{N} _-]/gu, '').trim().slice(0, 85) || 'análise detalhada';
         responseChannel = await message.startThread({ name: `Pedido: ${title}`, autoArchiveDuration: 1440 });
-        await responseChannel.send('Este pedido parece envolver uma análise mais detalhada. Vou manter as respostas e o contexto neste tópico; continue a conversa aqui para eu considerar o histórico.');
       } catch (error) {
         console.warn(`Could not create request thread for message ${message.id}:`, safeError(error));
       }
     }
+    progressMessage = await responseChannel.send('⏳ Recebi seu pedido. A IA está analisando; atualizarei esta mensagem com o resultado.');
     await responseChannel.sendTyping();
     const history = await getThreadHistory(message);
     const result = await planDiscordRequest({ message, apiKey, model: config.modelId, maxOutputTokens: config.maxOutputTokens, history });
@@ -258,7 +259,7 @@ async function processRequest(message: Message): Promise<void> {
     const guildUsage = source === 'central' ? await getGuildMonthlyCentralUsage(message.guild.id).catch(() => null) : null;
     const usageDescription = guildUsage === null ? '' : `\n\nUso da chave central neste servidor neste mês: **${guildUsage}/${config.guildMonthlyLimit} pedidos**.`;
     if (!result.plan) {
-      await responseChannel.send({ content: `${result.text.slice(0, 1800)}${usageDescription}`.slice(0, 2000), allowedMentions: { parse: [] } });
+      await progressMessage.edit({ content: `${result.text.slice(0, 1800)}${usageDescription}`.slice(0, 2000), embeds: [], components: [], allowedMentions: { parse: [] } });
       return;
     }
 
@@ -279,7 +280,8 @@ async function processRequest(message: Message): Promise<void> {
       .setTitle('Diagnóstico e proposta de alteração')
       .setDescription(`${result.plan.summary.slice(0, 900)}\n\n**Ações propostas**\n${actionDescription}${usageDescription}`.slice(0, 4000))
       .setFooter({ text: 'Nada será alterado sem confirmação. Esta proposta expira em 5 minutos.' });
-    await responseChannel.send({
+    await progressMessage.edit({
+      content: null,
       embeds: [embed],
       components: actionRows(id),
       allowedMentions: { parse: [], users: [], roles: [] },
@@ -287,18 +289,24 @@ async function processRequest(message: Message): Promise<void> {
   } catch (error) {
     console.error(`AI request failed for guild ${message.guild.id}:`, safeError(error));
     const status = safeError(error);
+    let errorMessage: string;
     if (status.includes('HTTP_401')) {
-      await responseChannel.send(source === 'personal'
+      errorMessage = source === 'personal'
         ? 'Sua chave pessoal foi recusada pelo OpenRouter. Não usei a chave central como alternativa. Remova/substitua sua chave com `/bot-chave-remover`.'
-        : 'A chave central do OpenRouter foi recusada. O operador precisa revisar `OPENROUTER_API_KEY`.');
+        : 'A chave central do OpenRouter foi recusada. O operador precisa revisar `OPENROUTER_API_KEY`.';
     } else if (status.includes('HTTP_429')) {
-      await responseChannel.send('O OpenRouter limitou temporariamente este modelo. Aguarde ou escolha outro modelo gratuito na configuração global.');
+      errorMessage = 'O OpenRouter limitou temporariamente este modelo. Aguarde ou escolha outro modelo gratuito na configuração global.';
     } else if (/timeout|aborted/i.test(status)) {
-      await responseChannel.send('O modelo gratuito demorou mais de 2 minutos e a tentativa automática com outro modelo também não terminou. Nenhuma mudança foi aplicada; tente novamente em instantes ou escolha outro modelo gratuito.');
+      errorMessage = 'O modelo gratuito demorou mais de 2 minutos e a tentativa automática com outro modelo também não terminou. Nenhuma mudança foi aplicada; tente novamente em instantes ou escolha outro modelo gratuito.';
     } else if (status.includes('HTTP_400') || status.includes('HTTP_404') || status.includes('HTTP_422')) {
-      await responseChannel.send('O OpenRouter recusou a solicitação para o modelo atual. Tente novamente; se persistir, o operador deve selecionar outro modelo gratuito. O motivo técnico foi registrado nos logs do serviço.');
+      errorMessage = 'O OpenRouter recusou a solicitação para o modelo atual. Tente novamente; se persistir, o operador deve selecionar outro modelo gratuito. O motivo técnico foi registrado nos logs do serviço.';
     } else {
-      await responseChannel.send('Não consegui concluir a análise desta vez. Nenhuma mudança foi aplicada; tente novamente. Se continuar, o log do serviço registra o erro do provedor para o operador corrigir.');
+      errorMessage = 'Não consegui concluir a análise desta vez. Nenhuma mudança foi aplicada; tente novamente. Se continuar, o log do serviço registra o erro do provedor para o operador corrigir.';
+    }
+    if (progressMessage) {
+      await progressMessage.edit({ content: errorMessage, embeds: [], components: [] }).catch(() => responseChannel.send(errorMessage));
+    } else {
+      await responseChannel.send(errorMessage);
     }
   }
 }
