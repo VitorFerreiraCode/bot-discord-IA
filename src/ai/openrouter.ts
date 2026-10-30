@@ -74,7 +74,7 @@ export async function createChatCompletion(input: {
       model: input.model,
       messages: input.messages,
       tools: input.tools,
-      tool_choice: 'auto',
+      tool_choice: 'required',
       max_tokens: input.maxOutputTokens,
     }),
     signal: AbortSignal.timeout(120_000),

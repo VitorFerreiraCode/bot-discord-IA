@@ -114,6 +114,7 @@ async function handleAccessCommand(interaction: ChatInputCommandInteraction): Pr
       ViewChannel: true,
       SendMessages: true,
       ReadMessageHistory: true,
+      SendMessagesInThreads: true,
     }, { reason: `Acesso autorizado por ${interaction.user.tag}` });
     await interaction.reply({ content: `${target} agora pode usar o canal privado de controle.`, ephemeral: true });
     return;
@@ -158,12 +159,21 @@ function actionRows(changeId: string): ActionRowBuilder<ButtonBuilder>[] {
   )];
 }
 
-function shouldOpenThread(requestText: string): boolean {
-  const clauses = requestText.split(/[.!?\n]+|\b(?:além disso|também|e ainda|por outro lado)\b/i).filter((part) => part.trim().length > 35);
-  return requestText.length >= 280
-    || clauses.length >= 3
-    || /\b(?:servidor inteiro|todas as permissões|todos os canais|organize o servidor|reorganize o servidor|auditoria completa|diagnóstico completo|em massa)\b/i.test(requestText)
-    || (requestText.length >= 150 && /\b(?:vários|varias|múltipl|permissões|categorias|canais|organizar|reorganizar|diagnosticar)\b/i.test(requestText));
+function topicChoiceRows(): ActionRowBuilder<ButtonBuilder>[] {
+  return [new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId('topic:save').setLabel('Salvar tópico').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('topic:close').setLabel('Encerrar tópico').setStyle(ButtonStyle.Danger),
+  )];
+}
+
+const topicClosingQuestion = '\n\nDeseja salvar esse tópico ou posso encerrar após me informar?';
+
+async function sendTopicMessage(channel: TextChannel | ThreadChannel, content: string): Promise<void> {
+  const isThread = channel.isThread();
+  await channel.send({
+    content: `${content}${isThread ? topicClosingQuestion : ''}`.slice(0, 2000),
+    components: isThread ? topicChoiceRows() : [],
+  });
 }
 
 async function getThreadHistory(message: Message): Promise<string | undefined> {
@@ -172,9 +182,13 @@ async function getThreadHistory(message: Message): Promise<string | undefined> {
   const recent = await thread.messages.fetch({ limit: 20 }).catch(() => null);
   if (!recent) return undefined;
   const entries = [...recent.values()]
-    .filter((entry) => entry.id !== message.id && entry.content.trim())
+    .filter((entry) => entry.id !== message.id && (entry.content.trim() || entry.embeds.length > 0))
     .sort((left, right) => left.createdTimestamp - right.createdTimestamp)
-    .map((entry) => `${entry.author.bot ? 'Bot' : entry.author.username}: ${entry.content.slice(0, 900)}`);
+    .map((entry) => {
+      const embedText = entry.embeds.map((embed) => [embed.title, embed.description, ...embed.fields.map((field) => `${field.name}: ${field.value}`)].filter(Boolean).join('\n')).filter(Boolean).join('\n');
+      const content = [entry.content, embedText].filter(Boolean).join('\n').slice(0, 1200);
+      return `${entry.author.bot ? 'Bot' : entry.author.username}: ${content}`;
+    });
   const starter = await thread.fetchStarterMessage().catch(() => null);
   if (starter?.content.trim() && !entries.some((entry) => entry.includes(starter.content.slice(0, 80)))) {
     entries.unshift(`${starter.author.username}: ${starter.content.slice(0, 900)}`);
@@ -191,10 +205,18 @@ async function processRequest(message: Message): Promise<void> {
   const requestText = message.content.trim();
   if (!requestText) return;
   let responseChannel: TextChannel | ThreadChannel = message.channel as TextChannel | ThreadChannel;
+  if (!isControlThread) {
+    try {
+      const title = requestText.replace(/<[@#&!]\d+>/g, '').replace(/[^\p{L}\p{N} _-]/gu, '').trim().slice(0, 85) || 'análise detalhada';
+      responseChannel = await message.startThread({ name: `Pedido: ${title}`, autoArchiveDuration: 1440 });
+    } catch (error) {
+      console.warn(`Could not create request thread for message ${message.id}:`, safeError(error));
+    }
+  }
 
   const config = await getServiceConfig();
   if (!config) {
-    await message.reply('O serviço ainda não foi configurado. O operador deve executar `/bot-configurar` para definir limites e modelo gratuito.');
+    await sendTopicMessage(responseChannel, 'O serviço ainda não foi configurado. O operador deve executar `/bot-configurar` para definir limites e modelo gratuito.');
     return;
   }
 
@@ -206,7 +228,7 @@ async function processRequest(message: Message): Promise<void> {
       apiKey = decryptSecret(encryptedKey);
       source = 'personal';
     } catch {
-      await message.reply('Não consegui abrir sua chave pessoal salva. Ela foi mantida sem fallback para a chave central; remova-a com `/bot-chave-remover` e envie novamente.');
+      await sendTopicMessage(responseChannel, 'Não consegui abrir sua chave pessoal salva. Ela foi mantida sem fallback para a chave central; remova-a com `/bot-chave-remover` e envie novamente.');
       return;
     }
   } else {
@@ -218,11 +240,11 @@ async function processRequest(message: Message): Promise<void> {
     try {
       const currentFreeModels = await listFreeChatModels(env.openRouterApiKey);
       if (!currentFreeModels.some((model) => model.id === config.modelId)) {
-        await message.reply('O modelo configurado não aparece mais entre os modelos gratuitos compatíveis. O operador precisa executar /bot-configurar e escolher novamente.');
+        await sendTopicMessage(responseChannel, 'O modelo configurado não aparece mais entre os modelos gratuitos compatíveis. O operador precisa executar /bot-configurar e escolher novamente.');
         return;
       }
     } catch {
-      await message.reply('Não consegui conferir o catálogo gratuito do OpenRouter. Tente novamente em instantes.');
+      await sendTopicMessage(responseChannel, 'Não consegui conferir o catálogo gratuito do OpenRouter. Tente novamente em instantes.');
       return;
     }
   }
@@ -232,25 +254,17 @@ async function processRequest(message: Message): Promise<void> {
     usageId = await reserveUsage(message.guild.id, message.author.id, source, config.modelId, config);
   } catch (error) {
     if (error instanceof Error && error.message === 'USER_DAILY_LIMIT') {
-      await message.reply('Você atingiu o limite diário configurado para a chave central. Cadastre sua chave pessoal ou aguarde a renovação do limite.');
+      await sendTopicMessage(responseChannel, 'Você atingiu o limite diário configurado para a chave central. Cadastre sua chave pessoal ou aguarde a renovação do limite.');
     } else if (error instanceof Error && error.message === 'GUILD_MONTHLY_LIMIT') {
-      await message.reply('Este servidor atingiu o limite mensal configurado para a chave central. Uma pessoa pode cadastrar uma chave própria para continuar usando.');
+      await sendTopicMessage(responseChannel, 'Este servidor atingiu o limite mensal configurado para a chave central. Uma pessoa pode cadastrar uma chave própria para continuar usando.');
     } else {
-      await message.reply('Não consegui reservar o uso da IA. Tente novamente mais tarde.');
+      await sendTopicMessage(responseChannel, 'Não consegui reservar o uso da IA. Tente novamente mais tarde.');
     }
     return;
   }
 
   let progressMessage: Message | null = null;
   try {
-    if (!isControlThread && shouldOpenThread(requestText)) {
-      try {
-        const title = requestText.replace(/<[@#&!]\d+>/g, '').replace(/[^\p{L}\p{N} _-]/gu, '').trim().slice(0, 85) || 'análise detalhada';
-        responseChannel = await message.startThread({ name: `Pedido: ${title}`, autoArchiveDuration: 1440 });
-      } catch (error) {
-        console.warn(`Could not create request thread for message ${message.id}:`, safeError(error));
-      }
-    }
     progressMessage = await responseChannel.send('⏳ Recebi seu pedido. A IA está analisando; atualizarei esta mensagem com o resultado.');
     await responseChannel.sendTyping();
     const history = await getThreadHistory(message);
@@ -259,7 +273,8 @@ async function processRequest(message: Message): Promise<void> {
     const guildUsage = source === 'central' ? await getGuildMonthlyCentralUsage(message.guild.id).catch(() => null) : null;
     const usageDescription = guildUsage === null ? '' : `\n\nUso da chave central neste servidor neste mês: **${guildUsage}/${config.guildMonthlyLimit} pedidos**.`;
     if (!result.plan) {
-      await progressMessage.edit({ content: `${result.text.slice(0, 1800)}${usageDescription}`.slice(0, 2000), embeds: [], components: [], allowedMentions: { parse: [] } });
+      const topicRows = responseChannel.isThread() ? topicChoiceRows() : [];
+      await progressMessage.edit({ content: `${result.text.slice(0, 1600)}${usageDescription}${topicClosingQuestion}`.slice(0, 2000), embeds: [], components: topicRows, allowedMentions: { parse: [] } });
       return;
     }
 
@@ -275,15 +290,15 @@ async function processRequest(message: Message): Promise<void> {
       actions,
       expiresAt,
     });
-    const actionDescription = actions.map((action) => describeAction(message.guild!, action)).join('\n').slice(0, 1500);
+    const actionDescription = actions.map((action) => describeAction(message.guild!, action)).join('\n').slice(0, 2600);
     const embed = new EmbedBuilder()
       .setTitle('Diagnóstico e proposta de alteração')
-      .setDescription(`${result.plan.summary.slice(0, 900)}\n\n**Ações propostas**\n${actionDescription}${usageDescription}`.slice(0, 4000))
+      .setDescription(`${result.plan.summary.slice(0, 750)}\n\n**Correções propostas**\n${actionDescription}\n\nPosso implementar após sua confirmação.${usageDescription}${topicClosingQuestion}`.slice(0, 4000))
       .setFooter({ text: 'Nada será alterado sem confirmação. Esta proposta expira em 5 minutos.' });
     await progressMessage.edit({
       content: null,
       embeds: [embed],
-      components: actionRows(id),
+      components: [...actionRows(id), ...(responseChannel.isThread() ? topicChoiceRows() : [])],
       allowedMentions: { parse: [], users: [], roles: [] },
     });
   } catch (error) {
@@ -303,10 +318,11 @@ async function processRequest(message: Message): Promise<void> {
     } else {
       errorMessage = 'Não consegui concluir a análise desta vez. Nenhuma mudança foi aplicada; tente novamente. Se continuar, o log do serviço registra o erro do provedor para o operador corrigir.';
     }
+    const topicQuestion = responseChannel.isThread() ? topicClosingQuestion : '';
     if (progressMessage) {
-      await progressMessage.edit({ content: errorMessage, embeds: [], components: [] }).catch(() => responseChannel.send(errorMessage));
+      await progressMessage.edit({ content: `${errorMessage}${topicQuestion}`, embeds: [], components: responseChannel.isThread() ? topicChoiceRows() : [] }).catch(() => responseChannel.send(`${errorMessage}${topicQuestion}`));
     } else {
-      await responseChannel.send(errorMessage);
+      await responseChannel.send(`${errorMessage}${topicQuestion}`);
     }
   }
 }
@@ -328,13 +344,15 @@ async function handleChangeButton(interaction: import('discord.js').ButtonIntera
       await interaction.reply({ content: 'Somente quem pediu pode cancelar esta proposta, ou ela já expirou.', ephemeral: true });
       return;
     }
-    await interaction.update({ content: 'Proposta cancelada. Nenhuma mudança foi aplicada.', embeds: [], components: [] });
+    const topicRows = interaction.channel?.isThread() ? topicChoiceRows() : [];
+    await interaction.update({ content: `Proposta cancelada. Nenhuma mudança foi aplicada.${interaction.channel?.isThread() ? topicClosingQuestion : ''}`, embeds: [], components: topicRows });
     return;
   }
 
   const change = await claimPendingChange(id, interaction.guild.id);
   if (!change) {
-    await interaction.update({ content: 'Esta proposta expirou ou já foi processada. Nenhuma nova alteração foi aplicada.', embeds: [], components: [] });
+    const topicRows = interaction.channel?.isThread() ? topicChoiceRows() : [];
+    await interaction.update({ content: `Esta proposta expirou ou já foi processada. Nenhuma nova alteração foi aplicada.${interaction.channel?.isThread() ? topicClosingQuestion : ''}`, embeds: [], components: topicRows });
     return;
   }
   await interaction.update({ content: 'Confirmação recebida. Estou aplicando as ações aprovadas...', embeds: [], components: [] });
@@ -348,12 +366,36 @@ async function handleChangeButton(interaction: import('discord.js').ButtonIntera
       await setPendingChangeStatus(id, 'failed');
       console.error(`Approved Discord action failed in guild ${interaction.guild.id}:`, safeError(error));
       const progress = completed.length ? ` Ações aplicadas antes da falha: ${completed.join(' ')}` : '';
-      await interaction.editReply({ content: `Não consegui concluir todas as ações. Já aplicadas: ${completed.length}/${actions.length}.${progress} Confira as permissões e a hierarquia do cargo do bot.`, embeds: [], components: [] });
+      const topicRows = interaction.channel?.isThread() ? topicChoiceRows() : [];
+      await interaction.editReply({ content: `Não consegui concluir todas as ações. Já aplicadas: ${completed.length}/${actions.length}.${progress} Confira as permissões e a hierarquia do cargo do bot.${interaction.channel?.isThread() ? topicClosingQuestion : ''}`, embeds: [], components: topicRows });
       return;
     }
   }
   await setPendingChangeStatus(id, 'completed');
-  await interaction.editReply({ content: `Concluído. ${completed.join(' ')}`, embeds: [], components: [] });
+  const topicRows = interaction.channel?.isThread() ? topicChoiceRows() : [];
+  await interaction.editReply({ content: `Concluído. ${completed.join(' ')}${interaction.channel?.isThread() ? topicClosingQuestion : ''}`, embeds: [], components: topicRows });
+}
+
+async function handleTopicButton(interaction: import('discord.js').ButtonInteraction): Promise<void> {
+  const [, action] = interaction.customId.split(':');
+  const thread = interaction.channel;
+  if (!interaction.guild || !thread?.isThread() || thread.parentId !== await getControlChannel(interaction.guild.id)) {
+    await interaction.reply({ content: 'Esse botão só funciona no tópico de um pedido do bot.', ephemeral: true });
+    return;
+  }
+  if (!await memberCanUse(interaction.guild, interaction.user.id)) {
+    await interaction.reply({ content: 'Você não está autorizado a gerenciar este tópico.', ephemeral: true });
+    return;
+  }
+  if (action === 'save') {
+    await interaction.reply({ content: 'Tópico salvo. O histórico permanece disponível no Discord, mesmo que seja arquivado por inatividade.', ephemeral: true });
+    return;
+  }
+  await interaction.reply({ content: 'Encerrando o tópico. O histórico continuará salvo no Discord.', ephemeral: true });
+  await thread.setArchived(true, `Tópico encerrado por ${interaction.user.tag}`).catch(async (error) => {
+    console.error(`Could not archive request thread ${thread.id}:`, safeError(error));
+    await interaction.followUp({ content: 'Não consegui encerrar o tópico por falta de permissão. Ele continua salvo e pode ser arquivado manualmente.', ephemeral: true }).catch(() => null);
+  });
 }
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -383,6 +425,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.isStringSelectMenu() && interaction.customId === 'service-model-select') {
       await selectServiceModel(interaction);
+      return;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('topic:')) {
+      await handleTopicButton(interaction);
       return;
     }
     if (interaction.isButton() && (interaction.customId.startsWith('change-confirm:') || interaction.customId.startsWith('change-cancel:'))) {

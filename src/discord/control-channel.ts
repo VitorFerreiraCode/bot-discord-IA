@@ -11,10 +11,38 @@ export async function ensureControlChannel(client: Client, guild: Guild): Promis
   await ensureGuild(guild.id, guild.ownerId);
   const storedId = await getControlChannel(guild.id);
   const stored = storedId ? await guild.channels.fetch(storedId).catch(() => null) : null;
-  if (stored?.type === ChannelType.GuildText) return stored;
-
   const botId = client.user?.id;
   if (!botId) throw new Error('Discord client is not ready');
+  if (stored?.type === ChannelType.GuildText) {
+    await stored.permissionOverwrites.edit(botId, {
+      ViewChannel: true,
+      SendMessages: true,
+      ReadMessageHistory: true,
+      ManageChannels: true,
+      ManageMessages: true,
+      ManageThreads: true,
+      CreatePublicThreads: true,
+      SendMessagesInThreads: true,
+    }, { reason: 'Atualizar permissões do canal privado de controle' });
+    await stored.permissionOverwrites.edit(guild.ownerId, {
+      ViewChannel: true,
+      SendMessages: true,
+      ReadMessageHistory: true,
+      SendMessagesInThreads: true,
+    }, { reason: 'Permitir ao proprietário conversar nos tópicos de controle' });
+    for (const role of guild.roles.cache.values()) {
+      if (role.id !== guild.roles.everyone.id && role.id !== botId && role.permissions.has(PermissionFlagsBits.ManageGuild)) {
+        await stored.permissionOverwrites.edit(role.id, {
+          ViewChannel: true,
+          SendMessages: true,
+          ReadMessageHistory: true,
+          SendMessagesInThreads: true,
+        }, { reason: 'Permitir a administradores conversar nos tópicos de controle' });
+      }
+    }
+    return stored;
+  }
+
   const [owner, botMember] = await Promise.all([
     guild.members.fetch(guild.ownerId),
     guild.members.fetch(botId),
@@ -22,7 +50,7 @@ export async function ensureControlChannel(client: Client, guild: Guild): Promis
   const rolePermissions = [...guild.roles.cache.values()]
     .filter((role) => role.id !== guild.roles.everyone.id && role.id !== botId)
     .map((role) => role.permissions.has(PermissionFlagsBits.ManageGuild)
-      ? { id: role.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
+      ? { id: role.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.SendMessagesInThreads] }
       : { id: role.id, deny: [PermissionFlagsBits.ViewChannel] });
 
   const channel = await guild.channels.create({
@@ -40,6 +68,9 @@ export async function ensureControlChannel(client: Client, guild: Guild): Promis
           PermissionFlagsBits.ReadMessageHistory,
           PermissionFlagsBits.ManageChannels,
           PermissionFlagsBits.ManageMessages,
+          PermissionFlagsBits.ManageThreads,
+          PermissionFlagsBits.CreatePublicThreads,
+          PermissionFlagsBits.SendMessagesInThreads,
         ],
       },
       {
@@ -48,6 +79,7 @@ export async function ensureControlChannel(client: Client, guild: Guild): Promis
           PermissionFlagsBits.ViewChannel,
           PermissionFlagsBits.SendMessages,
           PermissionFlagsBits.ReadMessageHistory,
+          PermissionFlagsBits.SendMessagesInThreads,
         ],
       },
     ],

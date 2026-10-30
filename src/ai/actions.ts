@@ -8,6 +8,13 @@ export type DiscordAction =
       reason: string;
     }
   | {
+      type: 'allow_read_history';
+      channelId: string;
+      targetType: 'member' | 'role';
+      targetId: string;
+      reason: string;
+    }
+  | {
       type: 'create_category';
       name: string;
       reason: string;

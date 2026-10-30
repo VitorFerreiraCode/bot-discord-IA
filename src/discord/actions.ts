@@ -7,6 +7,11 @@ import {
 import type { DiscordAction } from '../ai/actions.js';
 
 export function describeAction(guild: Guild, action: DiscordAction): string {
+  if (action.type === 'allow_read_history') {
+    const channel = guild.channels.cache.get(action.channelId);
+    const target = action.targetType === 'member' ? `<@${action.targetId}>` : `<@&${action.targetId}>`;
+    return `• Permitir que ${target} leia o histórico de <#${action.channelId}>${channel ? ` (#${channel.name})` : ''}. Motivo: ${action.reason}`;
+  }
   if (action.type === 'set_channel_visibility') {
     const channel = guild.channels.cache.get(action.channelId);
     const target = action.targetType === 'member' ? `<@${action.targetId}>` : `<@&${action.targetId}>`;
@@ -26,6 +31,16 @@ export async function applyDiscordAction(
     throw new Error('BOT_MISSING_MANAGE_CHANNELS');
   }
   const reason = `Bot Discord IA: ${action.reason}`.slice(0, 500);
+
+  if (action.type === 'allow_read_history') {
+    if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) throw new Error('BOT_MISSING_MANAGE_ROLES');
+    const channel = await guild.channels.fetch(action.channelId);
+    if (!channel || !('permissionOverwrites' in channel)) throw new Error('CHANNEL_NOT_FOUND');
+    if (action.targetType === 'member') await guild.members.fetch(action.targetId);
+    else await guild.roles.fetch(action.targetId);
+    await channel.permissionOverwrites.edit(action.targetId, { ReadMessageHistory: true }, { reason });
+    return `Permiti a leitura do histórico em #${channel.name}.`;
+  }
 
   if (action.type === 'set_channel_visibility') {
     if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) throw new Error('BOT_MISSING_MANAGE_ROLES');

@@ -24,15 +24,16 @@ Bot de Discord sem aplicação web para entender pedidos em linguagem natural, c
 3. O operador executa /bot-configurar, informa pedidos centrais por pessoa/dia, pedidos centrais por servidor/mês e tokens máximos de saída.
 4. O modelo gratuito openrouter/free é ativado imediatamente. O operador pode manter o router ou selecionar outro modelo gratuito com suporte a ferramentas.
 5. Administradores autorizam/removem membros com /bot-autorizar e /bot-revogar.
-6. Um membro autorizado descreve o problema no canal privado. Para identificar pessoas ou canais sem ambiguidade, deve mencioná-los no Discord.
+6. Um membro autorizado descreve o problema no canal privado. Cada solicitação abre um tópico ligado à mensagem; o canal principal não recebe as respostas. Para identificar pessoas ou canais sem ambiguidade, deve mencioná-los no Discord.
 7. Se a pessoa não tem chave própria, o bot informa que usará a central e confere as cotas configuradas; se tem, usa a chave individual.
-8. A IA recebe o pedido e o estado relevante do servidor. Ela retorna uma explicação e, quando cabível, ações suportadas.
+8. A IA recebe o pedido, o histórico recente do tópico e o estado de permissões efetivas e overwrites. Ela retorna diagnóstico e opções concretas de correção, incluindo `ReadMessageHistory`.
 9. O bot valida as ações, apresenta resumo e impacto e oferece Confirmar alterações ou Cancelar. A proposta expira após cinco minutos.
-10. Só ao confirmar o bot chama a API do Discord. Falhas parciais são reportadas.
+10. Só ao confirmar o bot chama a API do Discord. Falhas parciais são reportadas. Ao final, o usuário pode manter o tópico ou encerrá-lo; o histórico não é apagado.
 
 ## Ações que o MVP executa
 
 - Permitir/remover visualização de um canal ou categoria para um membro ou cargo específico.
+- Permitir leitura do histórico de um canal/categoria para um membro ou cargo específico.
 - Criar categoria.
 - Criar canal de texto público (usando as permissões da categoria, se houver) ou privado ao solicitante e administradores.
 
