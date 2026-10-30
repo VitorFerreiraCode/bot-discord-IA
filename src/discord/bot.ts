@@ -32,14 +32,22 @@ import {
   getServiceConfig,
   getUserKey,
   isAuthorized,
+  appendPreparedAuditStep,
+  claimChangeUndo,
+  finishChangeAudit,
+  finishChangeUndo,
+  getGuildAuditSummary,
+  markAuditStepApplied,
   recordUsageTokens,
   reserveUsage,
   revokeUser,
+  startChangeAudit,
   setPendingChangeStatus,
   storeUserKey,
 } from '../db/queries.js';
 import { decryptSecret, encryptSecret } from '../security/key-crypto.js';
-import { applyDiscordAction, describeAction } from './actions.js';
+import { proposalExpiresAt } from '../security/discord-rules.js';
+import { applyDiscordAction, captureActionUndoState, describeAction, describeActionImpact, isActionUndoable, revertDiscordAction } from './actions.js';
 import { ensureControlChannel } from './control-channel.js';
 import { beginSetup, finishSetupModal, selectServiceModel } from './setup-flow.js';
 import { commands } from './commands.js';
@@ -127,6 +135,72 @@ async function handleAccessCommand(interaction: ChatInputCommandInteraction): Pr
   await interaction.reply({ content: `A autorização de ${target} foi removida.`, ephemeral: true });
 }
 
+async function handleBotStatus(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!interaction.guild || !interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    await interaction.reply({ content: 'Este comando só pode ser usado por administradores do servidor.', ephemeral: true });
+    return;
+  }
+  await interaction.deferReply({ ephemeral: true });
+  const guild = interaction.guild;
+  const lines = [`**Status do bot em ${guild.name}**`, `Discord Gateway: ${client.isReady() ? '✅ conectado' : '❌ desconectado'}`];
+  try {
+    await pool.query('SELECT 1');
+    lines.push('PostgreSQL: ✅ conectado');
+  } catch {
+    lines.push('PostgreSQL: ❌ sem conexão');
+  }
+
+  const config = await getServiceConfig().catch(() => null);
+  lines.push(`Configuração global: ${config ? `✅ ativa (modelo configurado: \`${config.modelId}\`)` : '❌ pendente; operador deve usar /bot-configurar'}`);
+  lines.push(`Chave central: ${env.openRouterApiKey ? '✅ presente' : '❌ ausente'}`);
+  lines.push(`Message Content Intent: ${client.options.intents.has(GatewayIntentBits.MessageContent) ? '✅ ativo' : '❌ inativo'}`);
+  lines.push(`Server Members Intent: ${client.options.intents.has(GatewayIntentBits.GuildMembers) ? '✅ ativo' : '⚠️ inativo (necessário para migração completa de cargos)'}`);
+
+  const botMember = guild.members.me;
+  const requiredPermissions: Array<[string, bigint]> = [
+    ['Gerenciar canais', PermissionFlagsBits.ManageChannels],
+    ['Gerenciar cargos/permissões', PermissionFlagsBits.ManageRoles],
+    ['Gerenciar mensagens', PermissionFlagsBits.ManageMessages],
+  ];
+  const missingPermissions = botMember ? requiredPermissions.filter(([, permission]) => !botMember.permissions.has(permission)).map(([label]) => label) : requiredPermissions.map(([label]) => label);
+  lines.push(missingPermissions.length ? `Permissões globais do bot ausentes: ${missingPermissions.join(', ')}` : 'Permissões globais do bot: ✅ completas');
+  lines.push(`Silenciar/desmutar membros (opcional): ${botMember?.permissions.has(PermissionFlagsBits.MuteMembers) ? '✅ disponível' : '⚠️ sem permissão Mute Members'}`);
+  lines.push(`Cargo mais alto do bot: ${botMember?.roles.highest.name ?? 'não encontrado'} (posição ${botMember?.roles.highest.position ?? '—'})`);
+
+  const controlId = await getControlChannel(guild.id).catch(() => null);
+  const control = controlId ? await guild.channels.fetch(controlId).catch(() => null) : null;
+  lines.push(`Canal privado: ${control ? `✅ <#${control.id}>` : '❌ não encontrado; tente reiniciar o bot ou revisar as permissões'}`);
+  if (control && botMember && 'permissionsFor' in control) {
+    const controlPermissions = control.permissionsFor(botMember);
+    const missingControl: string[] = [];
+    if (!controlPermissions?.has(PermissionFlagsBits.ViewChannel)) missingControl.push('Ver canal');
+    if (!controlPermissions?.has(PermissionFlagsBits.SendMessages)) missingControl.push('Enviar mensagens');
+    if (!controlPermissions?.has(PermissionFlagsBits.ReadMessageHistory)) missingControl.push('Ler histórico');
+    lines.push(missingControl.length ? `Permissões do canal privado ausentes: ${missingControl.join(', ')}` : 'Permissões no canal privado: ✅ completas');
+    const canUseThreads = controlPermissions?.has(PermissionFlagsBits.CreatePublicThreads)
+      && controlPermissions.has(PermissionFlagsBits.SendMessagesInThreads)
+      && controlPermissions.has(PermissionFlagsBits.ManageThreads);
+    lines.push(`Tópicos no canal privado (criar, responder e arquivar): ${canUseThreads ? '✅ disponíveis' : '⚠️ faltam permissões específicas no canal'}`);
+  }
+  const mutedMembers = [...guild.voiceStates.cache.values()].filter((state) => state.serverMute).length;
+  const selfMutedMembers = [...guild.voiceStates.cache.values()].filter((state) => state.selfMute).length;
+  lines.push(`Voz no momento: ${mutedMembers} server mute(s), ${selfMutedMembers} self mute(s) entre membros em cache`);
+  lines.push('Hierarquia: o cargo do bot precisa ficar acima dos cargos que ele deve editar.');
+
+  if (config) {
+    try {
+      const models = await listFreeChatModels(env.openRouterApiKey);
+      const selectedAvailable = config.modelId === 'openrouter/free' || models.some((model) => model.id === config.modelId);
+      lines.push(`Catálogo OpenRouter gratuito: ${selectedAvailable ? '✅ disponível' : '⚠️ modelo atual ausente'} (${models.length} modelos compatíveis listados)`);
+    } catch {
+      lines.push('Catálogo OpenRouter gratuito: ⚠️ não foi possível consultar agora');
+    }
+  }
+  const audit = await getGuildAuditSummary(guild.id).catch(() => null);
+  lines.push(audit ? `Auditoria (30 dias): ${audit.total} mudanças, ${audit.failures} falhas, ${audit.undone} reversões` : 'Auditoria: ⚠️ indisponível; confirme se a migração de banco foi aplicada');
+  await interaction.editReply(lines.join('\n'));
+}
+
 async function handleKeyMessage(message: Message, key: string): Promise<void> {
   let result = 'Não consegui salvar a chave. Confira a configuração do serviço e tente novamente.';
   let saved = false;
@@ -158,6 +232,35 @@ function actionRows(changeId: string): ActionRowBuilder<ButtonBuilder>[] {
     new ButtonBuilder().setCustomId(`change-confirm:${changeId}`).setLabel('Confirmar alterações').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`change-cancel:${changeId}`).setLabel('Cancelar').setStyle(ButtonStyle.Secondary),
   )];
+}
+
+function undoActionRows(changeId: string, includeTopic: boolean): ActionRowBuilder<ButtonBuilder>[] {
+  const undoRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`change-undo:${changeId}`).setLabel('Reverter alterações').setStyle(ButtonStyle.Primary),
+  );
+  return [undoRow, ...(includeTopic ? topicChoiceRows() : [])];
+}
+
+function auditMetadata(actions: DiscordAction[]): unknown[] {
+  return actions.map((action) => {
+    const entry: Record<string, unknown> = { type: action.type };
+    if ('channelId' in action) entry.channelId = action.channelId;
+    if ('categoryId' in action && action.categoryId) entry.categoryId = action.categoryId;
+    if ('roleId' in action) entry.roleId = action.roleId;
+    if ('memberId' in action) entry.memberId = action.memberId;
+    if ('targetType' in action) entry.targetType = action.targetType;
+    if ('targetId' in action) entry.targetId = action.targetId;
+    if ('permissions' in action) entry.permissions = Object.keys(action.permissions);
+    if ('visible' in action) entry.visible = action.visible;
+    if ('muted' in action) entry.muted = action.muted;
+    if ('name' in action) entry.name = action.name;
+    return entry;
+  });
+}
+
+function actionWithoutReason(action: DiscordAction): Omit<DiscordAction, 'reason'> & { reason?: never } {
+  const { reason: _redactedReason, ...safeAction } = action;
+  return safeAction as Omit<DiscordAction, 'reason'> & { reason?: never };
 }
 
 function topicChoiceRows(): ActionRowBuilder<ButtonBuilder>[] {
@@ -299,7 +402,7 @@ async function processRequest(message: Message): Promise<void> {
 
     const actions = result.plan.actions;
     const id = randomUUID();
-    const expiresAt = new Date(Date.now() + 5 * 60_000);
+    const expiresAt = proposalExpiresAt(Date.now());
     await createPendingChange({
       id,
       guildId: message.guild.id,
@@ -309,10 +412,13 @@ async function processRequest(message: Message): Promise<void> {
       actions,
       expiresAt,
     });
-    const actionDescription = actions.map((action) => describeAction(message.guild!, action)).join('\n').slice(0, 2600);
+    const actionDescription = (await Promise.all(actions.map(async (action) => {
+      try { return await describeActionImpact(message.guild!, action); }
+      catch { return `${describeAction(message.guild!, action)}\n  Impacto: não consegui fazer a prévia detalhada; confira as permissões do bot.`; }
+    }))).join('\n').slice(0, 3000);
     const embed = new EmbedBuilder()
       .setTitle('Diagnóstico e proposta de alteração')
-      .setDescription(`${result.plan.summary.slice(0, 750)}\n\n**Correções propostas**\n${actionDescription}\n\nPosso implementar após sua confirmação.${usageDescription}${topicClosingQuestion}`.slice(0, 4000))
+      .setDescription(`${result.plan.summary.slice(0, 650)}\n\n**Prévia do impacto (estado atual → alteração)**\n${actionDescription}\n\nPosso implementar após sua confirmação.${usageDescription}${topicClosingQuestion}`.slice(0, 4000))
       .setFooter({ text: 'Nada será alterado sem confirmação. Esta proposta expira em 5 minutos.' });
     await progressMessage.edit({
       content: null,
@@ -380,12 +486,33 @@ async function handleChangeButton(interaction: import('discord.js').ButtonIntera
   await interaction.update({ content: 'Confirmação recebida. Estou aplicando as ações aprovadas...', embeds: [], components: [] });
 
   const actions = Array.isArray(change.actions) ? change.actions as DiscordAction[] : [];
+  try {
+    await startChangeAudit({
+      pendingChangeId: id,
+      guildId: interaction.guild.id,
+      requestedBy: change.requestedBy,
+      confirmedBy: interaction.user.id,
+      actionMetadata: auditMetadata(actions),
+    });
+  } catch (error) {
+    await setPendingChangeStatus(id, 'failed');
+    console.error(`Could not start change audit ${id}:`, safeError(error));
+    await interaction.editReply({ content: 'Não apliquei nenhuma alteração porque não consegui iniciar o registro de auditoria. Verifique se a migração do banco foi aplicada.', components: interaction.channel?.isThread() ? topicChoiceRows() : [] });
+    return;
+  }
   const completed: string[] = [];
+  let allActionsReversible = actions.length > 0;
   for (const action of actions) {
     try {
+      const before = await captureActionUndoState(interaction.guild, action);
+      const reversible = isActionUndoable(action) && before !== null;
+      if (!reversible) allActionsReversible = false;
+      await appendPreparedAuditStep(id, { action: actionWithoutReason(action), before, reversible, status: 'prepared' });
       completed.push(await applyDiscordAction(interaction.guild, change.requestedBy, action));
+      await markAuditStepApplied(id);
     } catch (error) {
       await setPendingChangeStatus(id, 'failed');
+      await finishChangeAudit(id, completed.length ? 'partial_failed' : 'failed', null).catch((auditError) => console.error(`Could not finalize failed audit ${id}:`, safeError(auditError)));
       console.error(`Approved Discord action failed in guild ${interaction.guild.id}:`, safeError(error));
       const progress = completed.length ? ` Ações aplicadas antes da falha: ${completed.join(' ')}` : '';
       const topicRows = interaction.channel?.isThread() ? topicChoiceRows() : [];
@@ -408,14 +535,55 @@ async function handleChangeButton(interaction: import('discord.js').ButtonIntera
             ? 'A correção da categoria falhou; reverti as permissões que já tinham sido alteradas. Confira o log se o problema persistir.'
           : failure.includes('BOT_MISSING_MANAGE_ROLES')
             ? 'O bot precisa da permissão Gerenciar cargos.'
+            : failure.includes('BOT_MISSING_MUTE_MEMBERS')
+              ? 'Para remover o server mute solicitado, o bot precisa da permissão Silenciar membros (Mute Members).'
             : 'Confira as permissões do bot e a hierarquia de cargos.';
       await interaction.editReply({ content: `Não consegui concluir todas as ações. Já aplicadas: ${completed.length}/${actions.length}.${progress} ${reason}${interaction.channel?.isThread() ? topicClosingQuestion : ''}`, embeds: [], components: topicRows });
       return;
     }
   }
   await setPendingChangeStatus(id, 'completed');
+  const undoExpiresAt = allActionsReversible ? new Date(Date.now() + 24 * 60 * 60_000) : null;
+  await finishChangeAudit(id, 'applied', undoExpiresAt);
   const topicRows = interaction.channel?.isThread() ? topicChoiceRows() : [];
-  await interaction.editReply({ content: `Concluído. ${completed.join(' ')}${interaction.channel?.isThread() ? topicClosingQuestion : ''}`, embeds: [], components: topicRows });
+  const components = allActionsReversible ? undoActionRows(id, Boolean(interaction.channel?.isThread())) : topicRows;
+  const undoMessage = allActionsReversible ? '\nVocê pode reverter essas permissões pelas próximas 24 horas.' : '';
+  await interaction.editReply({ content: `Concluído. ${completed.join(' ')}${undoMessage}${interaction.channel?.isThread() ? topicClosingQuestion : ''}`, embeds: [], components });
+}
+
+async function handleChangeUndoButton(interaction: import('discord.js').ButtonInteraction, changeId: string): Promise<void> {
+  if (!interaction.guild || !await memberCanUse(interaction.guild, interaction.user.id)) {
+    await interaction.reply({ content: 'Você não está autorizado a reverter mudanças neste servidor.', ephemeral: true });
+    return;
+  }
+  const journal = await claimChangeUndo(changeId, interaction.guild.id);
+  if (!journal) {
+    await interaction.reply({ content: 'A reversão expirou, já foi processada ou esta alteração não tem reversão automática disponível.', ephemeral: true });
+    return;
+  }
+  await interaction.update({ content: 'Reversão confirmada. Estou restaurando as permissões anteriores...', embeds: [], components: [] });
+  const steps = [...journal].reverse();
+  const restored: string[] = [];
+  try {
+    for (const raw of steps) {
+      if (!raw || typeof raw !== 'object') throw new Error('INVALID_UNDO_ENTRY');
+      const step = raw as { action?: unknown; before?: unknown; status?: unknown; reversible?: unknown };
+      if (step.status !== 'applied' || step.reversible !== true || !step.action) throw new Error('UNDO_NOT_FULLY_REVERSIBLE');
+      restored.push(await revertDiscordAction(interaction.guild, step.action as DiscordAction, step.before));
+    }
+    await finishChangeUndo(changeId, 'undone');
+    await interaction.editReply({ content: `Revertido. ${restored.join(' ')}${interaction.channel?.isThread() ? topicClosingQuestion : ''}`, components: interaction.channel?.isThread() ? topicChoiceRows() : [] });
+  } catch (error) {
+    await finishChangeUndo(changeId, 'undo_failed');
+    console.error(`Undo failed for change ${changeId} in guild ${interaction.guild.id}:`, safeError(error));
+    const detail = safeError(error).includes('UNDO_CONFLICT')
+      ? 'O estado atual mudou depois da alteração original; não sobrescrevi esse valor para preservar a mudança mais recente.'
+      : 'Confira as permissões e o estado atual do servidor antes de tentar novamente.';
+    await interaction.editReply({
+      content: `Não consegui completar a reversão automática. Já reverti ${restored.length}/${steps.length} etapa(s). ${detail}${interaction.channel?.isThread() ? topicClosingQuestion : ''}`,
+      components: interaction.channel?.isThread() ? topicChoiceRows() : [],
+    });
+  }
 }
 
 async function handleTopicButton(interaction: import('discord.js').ButtonInteraction): Promise<void> {
@@ -451,6 +619,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await handleAccessCommand(interaction);
         return;
       }
+      if (interaction.commandName === 'bot-status') {
+        await handleBotStatus(interaction);
+        return;
+      }
       if (interaction.commandName === 'bot-chave-remover') {
         if (!interaction.guild || !await memberCanUse(interaction.guild, interaction.user.id)) {
           await interaction.reply({ content: 'Você não está autorizado neste servidor.', ephemeral: true });
@@ -471,6 +643,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.isButton() && interaction.customId.startsWith('topic:')) {
       await handleTopicButton(interaction);
+      return;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('change-undo:')) {
+      const changeId = interaction.customId.slice('change-undo:'.length);
+      await handleChangeUndoButton(interaction, changeId);
       return;
     }
     if (interaction.isButton() && (interaction.customId.startsWith('change-confirm:') || interaction.customId.startsWith('change-cancel:'))) {

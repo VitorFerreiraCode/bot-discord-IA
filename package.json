@@ -12,7 +12,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "db:migrate": "node dist/db/migrate.js",
-    "commands:deploy": "tsx src/discord/deploy-commands.ts"
+    "commands:deploy": "tsx src/discord/deploy-commands.ts",
+    "test": "node --import tsx -e \"import('./src/tests/core-rules.test.ts')\""
   },
   "dependencies": {
     "discord.js": "^14.22.1",

@@ -15,4 +15,7 @@ export const commands = [
   new SlashCommandBuilder()
     .setName('bot-chave-remover')
     .setDescription('Remove sua chave pessoal do OpenRouter salva pelo bot.'),
+  new SlashCommandBuilder()
+    .setName('bot-status')
+    .setDescription('Verifica conexão, intents, permissões, banco e configuração do bot.'),
 ].map((command) => command.toJSON());

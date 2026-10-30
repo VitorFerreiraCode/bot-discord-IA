@@ -10,7 +10,10 @@ Bot de Discord sem aplicação web para entender pedidos em linguagem natural, d
 - Seleção de modelo gratuito por pedido: tarefas simples usam a opção gratuita preferida/popular; pedidos longos ou com várias mudanças priorizam modelos gratuitos com ferramentas, suporte a raciocínio e maior contexto. Se o modelo não retornar um plano estruturado, o bot tenta outras opções gratuitas.
 - Cada pedido no canal privado abre um tópico vinculado à mensagem; as respostas ficam no tópico para manter `#comandos-do-bot` sem respostas acumuladas. O bot inclui até 20 mensagens recentes do tópico no contexto.
 - Respostas com a chave central mostram a contagem mensal usada pelo servidor no próprio resultado, sem uma mensagem adicional de aviso para cada pedido.
-- O bot explica o diagnóstico e propõe ações para visibilidade, leitura de histórico e permissões de voz (`Connect`/`Speak`), além de criar categorias/canais/cargos e excluir cargos comuns. Pedidos claros de reparo de histórico/voz usam um plano local determinístico quando possível, sem depender do modelo retornar uma chamada de ferramenta. Só aplica mudanças após clicar em **Confirmar alterações**. Propostas expiram em cinco minutos.
+- O bot explica o diagnóstico e propõe ações para visibilidade, leitura de histórico e permissões de voz (`Connect`/`Speak`), além de criar categorias/canais/cargos e excluir cargos comuns. Pedidos claros de reparo de histórico/voz usam um plano local determinístico quando possível, sem depender do modelo retornar uma chamada de ferramenta. A proposta mostra permissões efetivas antes/depois, canais e membros em cache afetados e alertas para overwrites individuais ou silenciamentos de moderação. Só aplica mudanças após clicar em **Confirmar alterações**. Propostas expiram em cinco minutos.
+- Alterações de permissões e server mute podem ser revertidas pelo botão **Reverter alterações** durante 24 horas. A reversão confere se o estado não foi alterado depois; se mudou, evita sobrescrever a alteração mais recente. Exclusões e recriações de cargos não têm reversão automática.
+- `/bot-status` verifica Discord, intents, permissões, hierarquia do cargo do bot, canal privado, PostgreSQL, catálogo gratuito e auditoria recente.
+- Mudanças confirmadas geram auditoria por até 90 dias com solicitante, confirmador, IDs/tipos de ações, resultado e dados de reversão. O bot não registra o texto completo do pedido nem chaves na auditoria.
 - Chaves pessoais do OpenRouter podem ser coladas no canal privado: o bot valida a chave, salva cifrada e apaga a mensagem. Os pedidos daquela pessoa usam a chave pessoal sem fallback silencioso para a central. `/bot-chave-remover` remove a chave.
 - Limites de consumo da chave central são solicitados ao operador na configuração; não há quotas fixas codificadas.
 
@@ -114,3 +117,5 @@ O Railway oferece referências de variáveis entre serviços e deploy conectado 
 6. Teste `/bot-autorizar` e `/bot-revogar` com outra conta/membro autorizado.
 
 Veja [docs/PLANO.md](docs/PLANO.md) para as próximas capacidades e regras de segurança.
+
+Execute `npm test` para rodar os testes automatizados de regras de segurança, expiração de propostas e reversão de operações parciais.

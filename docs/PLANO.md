@@ -27,8 +27,10 @@ Bot de Discord sem aplicação web para entender pedidos em linguagem natural, c
 6. Um membro autorizado descreve o problema no canal privado. Cada solicitação abre um tópico ligado à mensagem; o canal principal não recebe as respostas. Para identificar pessoas ou canais sem ambiguidade, deve mencioná-los no Discord.
 7. Se a pessoa não tem chave própria, o bot informa que usará a central e confere as cotas configuradas; se tem, usa a chave individual.
 8. A IA recebe o pedido, o histórico recente do tópico e o estado de permissões efetivas e overwrites. Ela retorna diagnóstico e opções concretas de correção, incluindo `ReadMessageHistory`.
-9. O bot valida as ações, apresenta resumo e impacto e oferece Confirmar alterações ou Cancelar. A proposta expira após cinco minutos.
+9. O bot valida as ações, consulta o estado antes/depois, mostra canais afetados, membros em cache e alertas sobre negações individuais/silenciamentos de moderação, e oferece Confirmar alterações ou Cancelar. A proposta expira após cinco minutos.
 10. Só ao confirmar o bot chama a API do Discord. Falhas parciais são reportadas. Ao final, o usuário pode manter o tópico ou encerrá-lo; o histórico não é apagado.
+11. Permissões aplicadas e server mute podem ser revertidos por 24 horas se ninguém tiver alterado o mesmo valor depois. Mudanças concorrentes impedem a reversão automática para evitar sobrescrever o estado mais novo.
+12. `/bot-status` mostra conexão, intents, permissões, hierarquia, banco, modelo gratuito, canal privado e resumo da auditoria recente.
 
 ## Ações que o MVP executa
 
@@ -37,6 +39,7 @@ Bot de Discord sem aplicação web para entender pedidos em linguagem natural, c
 - Ajustar `ViewChannel`, `ReadMessageHistory`, `Connect` e `Speak` em canal para um membro/cargo; aplicar permissões compatíveis à categoria e aos canais filhos.
 - Criar cargos com permissões básicas seguras e excluir cargos comuns após confirmação explícita; cargos administrativos, do dono, `@everyone` e gerenciados são protegidos.
 - Recriar um cargo e migrar seus membros, preservando permissões não administrativas e configurando visibilidade/leitura do histórico na categoria e nos canais de texto. Requer Server Members Intent habilitado no portal e em `DISCORD_GUILD_MEMBERS_INTENT`.
+- Ajustar server mute de um membro mencionado somente quando o pedido atual disser explicitamente para desmutar/mutar e o bot tiver `MuteMembers`. Self mute é uma ação do próprio usuário; permitir `Speak` não o remove.
 - Criar categoria.
 - Criar canal de texto público (usando as permissões da categoria, se houver) ou privado ao solicitante e administradores.
 
@@ -50,6 +53,7 @@ O bot não apaga canais, não concede Administrator e não executa exclusões de
 - A solicitação e o retrato do servidor (nomes e IDs de canais/cargos e dados de membros mencionados) são enviados ao OpenRouter/provedor selecionado. Não enviar segredos em prompts.
 - Chamadas centrais reservam uma tentativa antes de chamar o provedor; tentativas com erro também contam para as cotas. Chaves pessoais não consomem a quota central.
 - Respostas sem conteúdo sensível são registradas como contagem de tokens, modelo, usuário, servidor e horário.
+- Mudanças confirmadas são auditadas por até 90 dias: solicitante, confirmador, tipos/IDs das ações, resultado e estado necessário para reversão. O texto integral do pedido e chaves de API não entram na auditoria.
 
 ## Segurança e validação
 
@@ -58,6 +62,7 @@ O bot não apaga canais, não concede Administrator e não executa exclusões de
 - @everyone, exclusões, cargos administrativos e ações irreversíveis não são permitidos pelo planejador.
 - Confirmação de mudanças expira em cinco minutos e só administradores/autorizados podem confirmar.
 - O bot depende da hierarquia de cargos e permissões concedidas no Discord; erros e ações parciais são comunicados.
+- A reversão automática expira em 24 horas e só aparece para planos inteiramente reversíveis. Se um overwrite ou estado de mute foi alterado depois da ação original, a reversão é bloqueada para preservar a mudança mais recente.
 - O intent privilegiado Message Content é necessário para mensagens livres no canal privado.
 
 ## Arquitetura aprovada
@@ -86,12 +91,15 @@ O bot não apaga canais, não concede Administrator e não executa exclusões de
 - O seletor reconhece mais pedidos comuns em português e prioriza modelos gratuitos com ferramentas e capacidade de raciocínio nas tarefas mais complexas. Chamadas têm timeout menor e uma tentativa de fallback de plano limitada.
 - Enquanto aguarda o provedor, o bot renova o indicador de digitação e atualiza a mensagem de progresso. Logs correlacionam etapas por um ID curto sem registrar o texto completo do pedido.
 - Pedidos claros para reparar histórico em categoria/canal e fala/conexão em um canal de voz podem usar um plano determinístico local. Isso evita depender de um modelo que não retornou a ferramenta; a proposta ainda precisa de confirmação antes de executar.
+- As propostas mostram estado efetivo e overwrite explícito antes/depois, quantos canais terão overwrite alterado e canais afetados. Avisam quando negações individuais ou server mute podem impedir a correção do cargo.
+- Permissões de categoria usam uma sequência com snapshot e rollback: se um canal falhar, o bot tenta restaurar as alterações anteriores e registra o resultado.
+- Alterações confirmadas iniciam auditoria antes da execução, registram cada etapa e guardam apenas metadados de ações (sem prompts ou segredos). Permissões e server mute oferecem botão de reversão por 24 horas com verificação de conflito.
+- `/bot-status` consulta estado do gateway, banco, configuração/modelo, intents, permissões do bot no servidor/canal privado, estados de mute em voz e resumo de auditoria.
+- `npm test` cobre negações, cargos protegidos, IDs Discord, permissões aceitas, timeouts, validade temporal das propostas e rollback em falhas sequenciais.
 
 ## Próximas melhorias técnicas recomendadas
 
-1. Adicionar testes automatizados para intenção negada, cargos protegidos, IDs inválidos, timeouts, expiração de proposta e falhas em cada etapa da migração.
-2. Adicionar comando de diagnóstico do bot que confira permissões/hierarquia, intents, banco, configuração do modelo e estado das cotas sem alterar o servidor.
-3. Gravar auditoria estruturada por mudança (ator, confirmação, entidades e resultado), com retenção configurável e sem armazenar prompts ou chaves.
-4. Fazer preflight de todas as ações de um plano e mostrar impacto total antes de confirmar; oferecer reversão específica para alterações de permissões quando possível.
-5. Carregar sob demanda os canais/categorias/cargos relacionados e resumir o retrato quando o servidor for grande, mantendo contagem e aviso de dados omitidos.
-6. Considerar fila por servidor e limite de chamadas simultâneas para evitar rajadas, rate limit do Discord/OpenRouter e atrasos em servidores movimentados.
+1. Adicionar testes de integração com um servidor Discord de teste e PostgreSQL para falhas reais da API, expiração no banco e reinício durante execução.
+2. Carregar sob demanda canais/categorias/cargos relacionados e resumir retratos em servidores grandes, mantendo contagens e aviso de dados omitidos.
+3. Considerar fila por servidor e limite de chamadas simultâneas para evitar rajadas, rate limits do Discord/OpenRouter e atrasos em servidores movimentados.
+4. Tornar o período de retenção da auditoria configurável pelo operador.

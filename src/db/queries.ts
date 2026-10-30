@@ -225,3 +225,88 @@ export async function cancelPendingChange(id: string, guildId: string, userId: s
   );
   return result.rowCount === 1;
 }
+
+export async function startChangeAudit(input: {
+  pendingChangeId: string;
+  guildId: string;
+  requestedBy: string;
+  confirmedBy: string;
+  actionMetadata: unknown;
+}): Promise<void> {
+  await pool.query("DELETE FROM change_audit WHERE created_at < NOW() - INTERVAL '90 days'");
+  await pool.query(
+    `INSERT INTO change_audit (pending_change_id, guild_id, requested_by, confirmed_by, action_metadata, outcome)
+     VALUES ($1, $2, $3, $4, $5, 'applying')`,
+    [input.pendingChangeId, input.guildId, input.requestedBy, input.confirmedBy, JSON.stringify(input.actionMetadata)],
+  );
+}
+
+export async function appendPreparedAuditStep(pendingChangeId: string, step: unknown): Promise<void> {
+  await pool.query(
+    `UPDATE change_audit SET undo_data = undo_data || jsonb_build_array($2::jsonb)
+     WHERE pending_change_id = $1 AND outcome = 'applying'`,
+    [pendingChangeId, JSON.stringify(step)],
+  );
+}
+
+export async function markAuditStepApplied(pendingChangeId: string): Promise<void> {
+  await pool.query(
+    `UPDATE change_audit
+       SET undo_data = jsonb_set(
+         undo_data,
+         ARRAY[(jsonb_array_length(undo_data) - 1)::text],
+         (undo_data -> (jsonb_array_length(undo_data) - 1)) || '{"status":"applied"}'::jsonb
+       )
+     WHERE pending_change_id = $1 AND outcome = 'applying' AND jsonb_array_length(undo_data) > 0`,
+    [pendingChangeId],
+  );
+}
+
+export async function finishChangeAudit(
+  pendingChangeId: string,
+  outcome: 'applied' | 'partial_failed' | 'failed',
+  undoExpiresAt: Date | null,
+): Promise<void> {
+  await pool.query(
+    `UPDATE change_audit SET outcome = $2, undo_expires_at = $3, completed_at = NOW()
+     WHERE pending_change_id = $1 AND outcome = 'applying'`,
+    [pendingChangeId, outcome, undoExpiresAt],
+  );
+}
+
+export async function claimChangeUndo(pendingChangeId: string, guildId: string): Promise<unknown[] | null> {
+  await pool.query("UPDATE change_audit SET outcome = 'failed' WHERE outcome = 'applying' AND created_at < NOW() - INTERVAL '10 minutes'");
+  const result = await pool.query<{ undo_data: unknown[] }>(
+    `UPDATE change_audit SET outcome = 'undoing'
+     WHERE pending_change_id = $1 AND guild_id = $2 AND outcome = 'applied' AND undo_expires_at > NOW()
+       AND jsonb_array_length(undo_data) > 0
+       AND NOT EXISTS (
+         SELECT 1 FROM jsonb_array_elements(change_audit.undo_data) AS audit_step(step)
+         WHERE COALESCE(audit_step.step->>'status', '') <> 'applied'
+            OR COALESCE(audit_step.step->>'reversible', 'false') <> 'true'
+       )
+     RETURNING undo_data`,
+    [pendingChangeId, guildId],
+  );
+  return result.rows[0]?.undo_data ?? null;
+}
+
+export async function finishChangeUndo(pendingChangeId: string, outcome: 'undone' | 'undo_failed'): Promise<void> {
+  await pool.query(
+    `UPDATE change_audit SET outcome = $2, undone_at = CASE WHEN $2 = 'undone' THEN NOW() ELSE undone_at END
+     WHERE pending_change_id = $1 AND outcome = 'undoing'`,
+    [pendingChangeId, outcome],
+  );
+}
+
+export async function getGuildAuditSummary(guildId: string): Promise<{ total: number; failures: number; undone: number }> {
+  const result = await pool.query<{ total: string; failures: string; undone: string }>(
+    `SELECT COUNT(*)::text AS total,
+       COUNT(*) FILTER (WHERE outcome IN ('failed', 'partial_failed', 'undo_failed'))::text AS failures,
+       COUNT(*) FILTER (WHERE outcome = 'undone')::text AS undone
+     FROM change_audit WHERE guild_id = $1 AND created_at >= NOW() - INTERVAL '30 days'`,
+    [guildId],
+  );
+  const row = result.rows[0];
+  return { total: Number(row?.total ?? 0), failures: Number(row?.failures ?? 0), undone: Number(row?.undone ?? 0) };
+}

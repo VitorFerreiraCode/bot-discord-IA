@@ -49,6 +49,12 @@ export type DiscordAction =
       reason: string;
     }
   | {
+      type: 'set_voice_mute';
+      memberId: string;
+      muted: boolean;
+      reason: string;
+    }
+  | {
       type: 'create_role';
       name: string;
       permissions: SafeRolePermission[];
