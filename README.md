@@ -25,7 +25,7 @@ O app Discord é separado do projeto Railway e não exige site, painel web, dom�
 5. Ative Developer Mode no Discord, clique com o botão direito no seu perfil e escolha **Copy User ID**. Esse ID vai em `BOT_OWNER_DISCORD_ID` e protege a configuração global.
 6. Em **OAuth2 > URL Generator**, marque os escopos `bot` e `applications.commands`. Gere o link e adicione o bot a um servidor de teste.
 7. Conceda ao bot **View Channels**, **Send Messages**, **Read Message History**, **Manage Channels**, **Manage Roles** e **Manage Messages**. Ele precisa apagar a mensagem depois que salva uma chave pessoal. Não conceda **Administrator**. Deixe o cargo do bot acima dos cargos que ele precisará editar.
-8. Antes de usar slash commands, rode `npm run commands:deploy` na pasta do projeto, com as credenciais configuradas. Depois, o bot cria o canal privado. O operador usa `/bot-configurar` nesse servidor para definir limites e escolher o modelo gratuito. Administradores podem autorizar outros membros.
+8. Para testar comandos imediatamente, copie o ID do servidor (Developer Mode > clique com o botão direito no servidor > **Copy Server ID**) para `DISCORD_GUILD_ID` e rode `npm run commands:deploy`. Isso registra os comandos só nesse servidor. Sem `DISCORD_GUILD_ID`, o script publica comandos globais, que podem levar um tempo para aparecer. Se executar no shell do Railway, a variável precisa estar cadastrada no serviço antes do comando. Depois, no Discord, digite `/` e selecione `/bot-configurar` na lista; não envie o nome como texto comum. O operador usa o formulário para definir limites e escolher o modelo gratuito. Administradores podem autorizar outros membros.
 
 Os escopos `bot` e `applications.commands` são os necessários para instalar o usuário bot e usar slash commands ([documentação de application commands do Discord](https://docs.discord.com/developers/docs/interactions/slash-commands)).
 
@@ -37,6 +37,7 @@ Copie `.env.example` para `.env` em execução local. No Railway, preencha as va
 | --- | --- | --- |
 | `DISCORD_BOT_TOKEN` | Sim | **Bot > Reset Token** no Developer Portal. Segredo do bot Discord. |
 | `DISCORD_CLIENT_ID` | Sim | **General Information > Application ID**. |
+| `DISCORD_GUILD_ID` | Não | ID do servidor de teste; usado pelo script `commands:deploy` para publicar slash commands imediatamente nesse servidor. |
 | `BOT_OWNER_DISCORD_ID` | Sim | Seu User ID do Discord. Só esta pessoa pode executar `/bot-configurar`. |
 | `DATABASE_URL` | Sim | URL PostgreSQL local ou referência Railway como `${{Postgres.DATABASE_URL}}` (ajuste `Postgres` ao nome do serviço criado). |
 | `OPENROUTER_API_KEY` | **Sim, sempre** | Chave central do OpenRouter. É obrigatória já na primeira inicialização; sem ela o processo não inicia. |
@@ -94,7 +95,7 @@ Se quiser manter os segredos e banco no Railway, mas rodar o processo local, vin
 2. No Railway, crie um projeto conectado ao repositório como um serviço persistente de bot.
 3. Adicione um serviço **PostgreSQL** ao mesmo projeto. No serviço do bot, crie `DATABASE_URL` como referência à variável do PostgreSQL; por exemplo `${{Postgres.DATABASE_URL}}`. O nome antes do ponto deve corresponder ao nome real do serviço. O Railway fornece `DATABASE_URL` para os serviços ([guia oficial do PostgreSQL](https://docs.railway.com/databases/postgresql)).
 4. Cadastre `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, `BOT_OWNER_DISCORD_ID`, `OPENROUTER_API_KEY`, `AI_KEY_ENCRYPTION_KEY`, `DATABASE_URL` e `NODE_ENV=production` em **Variables**.
-5. Antes de usar comandos slash, rode `npm run commands:deploy` na cópia local do projeto, com as mesmas credenciais Discord/OpenRouter configuradas no Railway. Depois faça o deploy. `railway.json` compila o TypeScript, executa migrações e inicia o bot. Não é necessário domínio público nem porta HTTP.
+5. Para testar no servidor agora, cadastre `DISCORD_GUILD_ID` com o ID desse servidor nas variáveis do Railway e rode `npm run commands:deploy` no shell do serviço. Confirme no log que aparece o mesmo ID de aplicação do bot convidado. Alternativamente, execute o comando localmente com o token e o Application ID da mesma aplicação; para publicação global, deixe `DISCORD_GUILD_ID` vazio e aguarde a propagação. `railway.json` compila o TypeScript, executa migrações e inicia o bot. Não é necessário domínio público nem porta HTTP.
 6. Confira os logs do serviço e teste o canal criado no Discord. Rode `/bot-configurar` como operador; preencha os três limites que o bot perguntar e mantenha `openrouter/free` ou selecione outro modelo gratuito.
 7. Para testar a chave pessoal, cole a chave OpenRouter no canal privado. Confira que a mensagem sumiu e a confirmação chegou por DM; depois mande um pedido usando essa chave.
 
@@ -102,10 +103,11 @@ O Railway oferece referências de variáveis entre serviços e deploy conectado 
 
 ## Teste inicial sugerido no Discord
 
-1. No servidor de teste, confirme que existe `#comandos-do-bot` e que só você/admins o veem.
-2. Execute `/bot-configurar` e informe os limites que quer para pedidos centrais por pessoa/dia, por servidor/mês e tokens máximos por resposta. `openrouter/free` fica ativo de imediato.
-3. No canal privado, envie: `Por que <@membro> não consegue ver <#canal>?` e troque pelas menções reais.
-4. Confira diagnóstico, ação proposta e impacto; pressione **Confirmar alterações** só quando a proposta estiver correta. Sem confirmação, nada muda.
-5. Teste `/bot-autorizar` e `/bot-revogar` com outra conta/membro autorizado.
+1. No servidor de teste, confirme que existe `#comandos-do-bot` e que só você/admins o veem. Publique os comandos para esse servidor conforme a etapa de deploy.
+2. No Discord, digite `/` e escolha `/bot-configurar` na lista de comandos do **mesmo bot**; a mensagem deve aparecer como comando de aplicação, com o ícone do bot, antes de enviar. Se o bot responder que o serviço ainda não foi configurado no canal, isso veio do processamento de mensagem comum: o comando slash não foi selecionado. Se o comando responder que é exclusivo do operador, confira se `BOT_OWNER_DISCORD_ID` é o seu User ID.
+3. Informe os limites que quer para pedidos centrais por pessoa/dia, por servidor/mês e tokens máximos por resposta. `openrouter/free` fica ativo de imediato.
+4. No canal privado, envie: `Por que <@membro> não consegue ver <#canal>?` e troque pelas menções reais.
+5. Confira diagnóstico, ação proposta e impacto; pressione **Confirmar alterações** só quando a proposta estiver correta. Sem confirmação, nada muda.
+6. Teste `/bot-autorizar` e `/bot-revogar` com outra conta/membro autorizado.
 
 Veja [docs/PLANO.md](docs/PLANO.md) para as próximas capacidades e regras de segurança.
