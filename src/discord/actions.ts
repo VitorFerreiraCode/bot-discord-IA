@@ -32,6 +32,23 @@ export function describeAction(guild: Guild, action: DiscordAction): string {
     const target = action.targetType === 'member' ? `<@${action.targetId}>` : `<@&${action.targetId}>`;
     return `• Permitir que ${target} leia o histórico de <#${action.channelId}>${channel ? ` (#${channel.name})` : ''}. Motivo: ${action.reason}`;
   }
+  if (action.type === 'set_channel_permissions') {
+    const channel = guild.channels.cache.get(action.channelId);
+    const target = action.targetType === 'member' ? `<@${action.targetId}>` : `<@&${action.targetId}>`;
+    const changes = Object.entries(action.permissions).map(([permission, enabled]) => `${permission}: ${enabled ? 'permitir' : 'negar'}`).join(', ');
+    return `• Ajustar ${changes} para ${target} em <#${action.channelId}>${channel && 'name' in channel ? ` (${channel.name})` : ''}. Motivo: ${action.reason}`;
+  }
+  if (action.type === 'set_category_permissions') {
+    const category = guild.channels.cache.get(action.categoryId);
+    const target = action.targetType === 'member' ? `<@${action.targetId}>` : `<@&${action.targetId}>`;
+    const changes = Object.entries(action.permissions).map(([permission, enabled]) => `${permission}: ${enabled ? 'permitir' : 'negar'}`).join(', ');
+    const childScope = Object.keys(action.permissions).every((key) => key === 'ReadMessageHistory')
+      ? 'e nos canais de texto filhos'
+      : Object.keys(action.permissions).every((key) => key === 'Connect' || key === 'Speak')
+        ? 'e nos canais de voz filhos'
+        : 'e nos canais filhos compatíveis';
+    return `• Ajustar ${changes} para ${target} na categoria **${category && 'name' in category ? category.name : action.categoryId}** ${childScope}. Motivo: ${action.reason}`;
+  }
   if (action.type === 'set_channel_visibility') {
     const channel = guild.channels.cache.get(action.channelId);
     const target = action.targetType === 'member' ? `<@${action.targetId}>` : `<@&${action.targetId}>`;
@@ -48,7 +65,7 @@ export async function applyDiscordAction(
 ): Promise<string> {
   const botMember = guild.members.me;
   const roleAction = action.type === 'create_role' || action.type === 'delete_role';
-  const needsManageRoles = roleAction || action.type === 'allow_read_history' || action.type === 'set_channel_visibility' || action.type === 'create_text_channel' || action.type === 'recreate_role_for_category';
+  const needsManageRoles = roleAction || action.type === 'allow_read_history' || action.type === 'set_channel_permissions' || action.type === 'set_category_permissions' || action.type === 'set_channel_visibility' || action.type === 'create_text_channel' || action.type === 'recreate_role_for_category';
   const needsManageChannels = !roleAction;
   if (!botMember) throw new Error('BOT_MEMBER_NOT_CACHED');
   if (needsManageRoles && !botMember.permissions.has(PermissionFlagsBits.ManageRoles)) throw new Error('BOT_MISSING_MANAGE_ROLES');
@@ -157,9 +174,75 @@ export async function applyDiscordAction(
     const channel = await guild.channels.fetch(action.channelId);
     if (!channel || !('permissionOverwrites' in channel)) throw new Error('CHANNEL_NOT_FOUND');
     if (action.targetType === 'member') await guild.members.fetch(action.targetId);
-    else await guild.roles.fetch(action.targetId);
+    else {
+      const targetRole = await guild.roles.fetch(action.targetId);
+      if (!targetRole?.editable) throw new Error('ROLE_ABOVE_BOT_HIERARCHY');
+    }
     await channel.permissionOverwrites.edit(action.targetId, { ReadMessageHistory: true }, { reason });
     return `Permiti a leitura do histórico em #${channel.name}.`;
+  }
+
+  if (action.type === 'set_channel_permissions') {
+    const channel = await guild.channels.fetch(action.channelId);
+    if (!channel || !('permissionOverwrites' in channel)) throw new Error('CHANNEL_NOT_FOUND');
+    if (action.targetType === 'member') await guild.members.fetch(action.targetId);
+    else {
+      const targetRole = await guild.roles.fetch(action.targetId);
+      if (!targetRole?.editable) throw new Error('ROLE_ABOVE_BOT_HIERARCHY');
+    }
+    await channel.permissionOverwrites.edit(action.targetId, action.permissions, { reason });
+    const changes = Object.entries(action.permissions).map(([permission, enabled]) => `${permission} ${enabled ? 'permitido' : 'negado'}`).join(', ');
+    return `Atualizei ${changes} em #${channel.name}.`;
+  }
+
+  if (action.type === 'set_category_permissions') {
+    const category = await guild.channels.fetch(action.categoryId);
+    if (!category || category.type !== ChannelType.GuildCategory) throw new Error('CATEGORY_NOT_FOUND');
+    if (action.targetType === 'member') await guild.members.fetch(action.targetId);
+    else {
+      const targetRole = await guild.roles.fetch(action.targetId);
+      if (!targetRole?.editable) throw new Error('ROLE_ABOVE_BOT_HIERARCHY');
+    }
+    const fetchedChannels = await guild.channels.fetch();
+    const childChannels = [...(fetchedChannels?.values() ?? [])]
+      .filter((channel): channel is NonNullable<typeof channel> => {
+        if (!channel || channel.parentId !== category.id || !('permissionOverwrites' in channel)) return false;
+        if (action.permissions.ReadMessageHistory !== undefined && Object.keys(action.permissions).every((key) => key === 'ReadMessageHistory')) {
+          return [ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.GuildForum, ChannelType.GuildMedia].includes(channel.type);
+        }
+        if ((action.permissions.Connect !== undefined || action.permissions.Speak !== undefined)
+          && Object.keys(action.permissions).every((key) => key === 'Connect' || key === 'Speak')) {
+          return [ChannelType.GuildVoice, ChannelType.GuildStageVoice].includes(channel.type);
+        }
+        return true;
+      });
+    const targets = [category, ...childChannels];
+    const previousPermissions = new Map(targets.map((channel) => {
+      const existing = channel.permissionOverwrites.cache.get(action.targetId);
+      const priorValues = Object.fromEntries(Object.keys(action.permissions).map((permission) => {
+        const bit = PermissionFlagsBits[permission as keyof typeof PermissionFlagsBits];
+        return [permission, existing?.allow.has(bit) ? true : existing?.deny.has(bit) ? false : null];
+      })) as PermissionOverwriteOptions;
+      return [channel.id, priorValues];
+    }));
+    const modified: typeof targets = [];
+    try {
+      for (const channel of targets) {
+        modified.push(channel);
+        await channel.permissionOverwrites.edit(action.targetId, action.permissions, { reason });
+      }
+    } catch (error) {
+      const rollbackFailures: string[] = [];
+      for (const channel of modified.reverse()) {
+        const restore = previousPermissions.get(channel.id)!;
+        await channel.permissionOverwrites.edit(action.targetId, restore, { reason: 'Reverter correção parcial de permissões' })
+          .catch(() => rollbackFailures.push(channel.id));
+      }
+      const detail = error instanceof Error ? error.message.slice(0, 160) : 'erro desconhecido';
+      throw new Error(`CATEGORY_PERMISSION_UPDATE_FAILED: ${detail}; ${rollbackFailures.length ? `ROLLBACK_INCOMPLETE ${rollbackFailures.join(',')}` : 'rollback completed'}`);
+    }
+    const changes = Object.entries(action.permissions).map(([permission, enabled]) => `${permission} ${enabled ? 'permitido' : 'negado'}`).join(', ');
+    return `Atualizei ${changes} na categoria ${category.name} e em ${childChannels.length} canais filhos.`;
   }
 
   if (action.type === 'set_channel_visibility') {

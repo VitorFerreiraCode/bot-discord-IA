@@ -34,6 +34,7 @@ Bot de Discord sem aplicação web para entender pedidos em linguagem natural, c
 
 - Permitir/remover visualização de um canal ou categoria para um membro ou cargo específico.
 - Permitir leitura do histórico de um canal/categoria para um membro ou cargo específico.
+- Ajustar `ViewChannel`, `ReadMessageHistory`, `Connect` e `Speak` em canal para um membro/cargo; aplicar permissões compatíveis à categoria e aos canais filhos.
 - Criar cargos com permissões básicas seguras e excluir cargos comuns após confirmação explícita; cargos administrativos, do dono, `@everyone` e gerenciados são protegidos.
 - Recriar um cargo e migrar seus membros, preservando permissões não administrativas e configurando visibilidade/leitura do histórico na categoria e nos canais de texto. Requer Server Members Intent habilitado no portal e em `DISCORD_GUILD_MEMBERS_INTENT`.
 - Criar categoria.
@@ -84,6 +85,7 @@ O bot não apaga canais, não concede Administrator e não executa exclusões de
 - Se a chamada para excluir o cargo antigo falhar de forma incerta, o bot mantém o novo cargo e orienta conferência manual em vez de tentar removê-lo e arriscar perder o único cargo ativo.
 - O seletor reconhece mais pedidos comuns em português e prioriza modelos gratuitos com ferramentas e capacidade de raciocínio nas tarefas mais complexas. Chamadas têm timeout menor e uma tentativa de fallback de plano limitada.
 - Enquanto aguarda o provedor, o bot renova o indicador de digitação e atualiza a mensagem de progresso. Logs correlacionam etapas por um ID curto sem registrar o texto completo do pedido.
+- Pedidos claros para reparar histórico em categoria/canal e fala/conexão em um canal de voz podem usar um plano determinístico local. Isso evita depender de um modelo que não retornou a ferramenta; a proposta ainda precisa de confirmação antes de executar.
 
 ## Próximas melhorias técnicas recomendadas
 

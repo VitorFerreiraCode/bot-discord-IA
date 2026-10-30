@@ -12,6 +12,10 @@ export const SAFE_ROLE_PERMISSION_NAMES = [
 
 export type SafeRolePermission = typeof SAFE_ROLE_PERMISSION_NAMES[number];
 
+export const CHANNEL_PERMISSION_NAMES = ['ViewChannel', 'ReadMessageHistory', 'Connect', 'Speak'] as const;
+export type ChannelPermissionName = typeof CHANNEL_PERMISSION_NAMES[number];
+export type ChannelPermissionChanges = Partial<Record<ChannelPermissionName, boolean>>;
+
 export type DiscordAction =
   | {
       type: 'set_channel_visibility';
@@ -26,6 +30,22 @@ export type DiscordAction =
       channelId: string;
       targetType: 'member' | 'role';
       targetId: string;
+      reason: string;
+    }
+  | {
+      type: 'set_channel_permissions';
+      channelId: string;
+      targetType: 'member' | 'role';
+      targetId: string;
+      permissions: ChannelPermissionChanges;
+      reason: string;
+    }
+  | {
+      type: 'set_category_permissions';
+      categoryId: string;
+      targetType: 'member' | 'role';
+      targetId: string;
+      permissions: ChannelPermissionChanges;
       reason: string;
     }
   | {

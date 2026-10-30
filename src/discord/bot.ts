@@ -287,7 +287,10 @@ async function processRequest(message: Message): Promise<void> {
     typingInterval = null;
     await recordUsageTokens(usageId, result.inputTokens, result.outputTokens, result.modelId);
     const guildUsage = source === 'central' ? await getGuildMonthlyCentralUsage(message.guild.id).catch(() => null) : null;
-    const usageDescription = `${guildUsage === null ? '' : `\n\nUso da chave central neste servidor neste mês: **${guildUsage}/${config.guildMonthlyLimit} pedidos**.`}\n\nModelo gratuito selecionado: \`${result.modelId}\`.`;
+    const modelDescription = result.modelId.startsWith('local/')
+      ? 'Correção preparada pelas regras locais do bot; nenhum pedido foi enviado ao provedor de IA.'
+      : `Modelo gratuito selecionado: \`${result.modelId}\`.`;
+    const usageDescription = `${guildUsage === null ? '' : `\n\nUso da chave central neste servidor neste mês: **${guildUsage}/${config.guildMonthlyLimit} pedidos**.`}\n\n${modelDescription}`;
     if (!result.plan) {
       const topicRows = responseChannel.isThread() ? topicChoiceRows() : [];
       await progressMessage.edit({ content: `${result.text.slice(0, 1600)}${usageDescription}${topicClosingQuestion}`.slice(0, 2000), embeds: [], components: topicRows, allowedMentions: { parse: [] } });
@@ -399,6 +402,10 @@ async function handleChangeButton(interaction: import('discord.js').ButtonIntera
           ? 'A substituição falhou antes de concluir. O bot tentou reverter o cargo novo e manter o antigo; confira os logs antes de repetir.'
         : failure.includes('ROLE_ABOVE_BOT_HIERARCHY')
           ? 'O cargo está acima do cargo do bot na hierarquia do servidor.'
+          : failure.includes('CATEGORY_PERMISSION_UPDATE_FAILED') && failure.includes('ROLLBACK_INCOMPLETE')
+            ? 'A correção da categoria falhou parcialmente e a reversão também não terminou. Confira os canais da categoria antes de tentar de novo.'
+          : failure.includes('CATEGORY_PERMISSION_UPDATE_FAILED')
+            ? 'A correção da categoria falhou; reverti as permissões que já tinham sido alteradas. Confira o log se o problema persistir.'
           : failure.includes('BOT_MISSING_MANAGE_ROLES')
             ? 'O bot precisa da permissão Gerenciar cargos.'
             : 'Confira as permissões do bot e a hierarquia de cargos.';
