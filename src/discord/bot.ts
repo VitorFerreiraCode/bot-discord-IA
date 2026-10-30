@@ -7,6 +7,8 @@ import {
   Events,
   GatewayIntentBits,
   PermissionFlagsBits,
+  REST,
+  Routes,
   type ChatInputCommandInteraction,
   type Guild,
   type Message,
@@ -38,6 +40,14 @@ import { decryptSecret, encryptSecret } from '../security/key-crypto.js';
 import { applyDiscordAction, describeAction } from './actions.js';
 import { ensureControlChannel } from './control-channel.js';
 import { beginSetup, finishSetupModal, selectServiceModel } from './setup-flow.js';
+import { commands } from './commands.js';
+
+const commandRest = new REST({ version: '10' }).setToken(env.discordBotToken());
+
+async function deployGuildCommands(guildId: string): Promise<void> {
+  await commandRest.put(Routes.applicationGuildCommands(env.discordClientId(), guildId), { body: commands });
+  console.log(`Registered ${commands.length} slash commands in guild ${guildId}.`);
+}
 
 export const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
@@ -47,6 +57,11 @@ client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Bot conectado como ${readyClient.user.tag}.`);
   for (const guild of readyClient.guilds.cache.values()) {
     try {
+      await deployGuildCommands(guild.id);
+    } catch (error) {
+      console.error(`Could not register slash commands in guild ${guild.id}:`, safeError(error));
+    }
+    try {
       await ensureControlChannel(readyClient, guild);
     } catch (error) {
       console.error(`Could not provision control channel for guild ${guild.id}:`, safeError(error));
@@ -55,6 +70,11 @@ client.once(Events.ClientReady, async (readyClient) => {
 });
 
 client.on(Events.GuildCreate, async (guild) => {
+  try {
+    await deployGuildCommands(guild.id);
+  } catch (error) {
+    console.error(`Could not register slash commands in guild ${guild.id}:`, safeError(error));
+  }
   try {
     const channel = await ensureControlChannel(client, guild);
     console.log(`Provisioned control channel ${channel.id} in guild ${guild.id}.`);
