@@ -77,7 +77,7 @@ export async function createChatCompletion(input: {
       tool_choice: 'auto',
       max_tokens: input.maxOutputTokens,
     }),
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(120_000),
   });
   if (!response.ok) {
     const errorBody = await response.text().catch(() => '');

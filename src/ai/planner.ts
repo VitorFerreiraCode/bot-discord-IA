@@ -1,6 +1,6 @@
 import { ChannelType, PermissionFlagsBits, type Guild, type Message } from 'discord.js';
 import type { DiscordAction, ProposedPlan } from './actions.js';
-import { createChatCompletion } from './openrouter.js';
+import { createChatCompletion, listFreeChatModels } from './openrouter.js';
 
 const planTool = {
   type: 'function',
@@ -215,9 +215,26 @@ export async function planDiscordRequest(input: {
     completion = await request(input.model);
   } catch (error) {
     const failure = error instanceof Error ? error.message : '';
-    if (input.model === 'openrouter/free' || !/OPENROUTER_CHAT_HTTP_(400|404|422|429|500|502|503)/.test(failure)) throw error;
-    console.warn(`Model ${input.model} failed; retrying through openrouter/free: ${failure.slice(0, 240)}`);
-    completion = await request('openrouter/free');
+    const timedOut = /timed?\s*out|timeout|aborted due to timeout/i.test(failure);
+    const retryableHttpError = /OPENROUTER_CHAT_HTTP_(400|404|422|429|500|502|503)/.test(failure);
+    if (!timedOut && !retryableHttpError) throw error;
+
+    let fallbackModel: string | undefined;
+    if (input.model !== 'openrouter/free') {
+      fallbackModel = 'openrouter/free';
+    } else if (timedOut) {
+      fallbackModel = (await listFreeChatModels(input.apiKey).catch(() => []))
+        .find((model) => model.id !== input.model)?.id;
+    }
+    if (!fallbackModel) throw error;
+
+    console.warn(`Model ${input.model} failed; retrying through ${fallbackModel}: ${failure.slice(0, 240)}`);
+    try {
+      completion = await request(fallbackModel);
+    } catch (fallbackError) {
+      const fallbackFailure = fallbackError instanceof Error ? fallbackError.message : 'unknown fallback error';
+      throw new Error(`Primary model failed (${failure.slice(0, 240)}); fallback ${fallbackModel} failed (${fallbackFailure.slice(0, 240)})`);
+    }
   }
 
   const call = completion.toolCalls.find((tool) => tool.name === 'propose_discord_changes');

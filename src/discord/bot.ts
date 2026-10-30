@@ -293,6 +293,8 @@ async function processRequest(message: Message): Promise<void> {
         : 'A chave central do OpenRouter foi recusada. O operador precisa revisar `OPENROUTER_API_KEY`.');
     } else if (status.includes('HTTP_429')) {
       await responseChannel.send('O OpenRouter limitou temporariamente este modelo. Aguarde ou escolha outro modelo gratuito na configuração global.');
+    } else if (/timeout|aborted/i.test(status)) {
+      await responseChannel.send('O modelo gratuito demorou mais de 2 minutos e a tentativa automática com outro modelo também não terminou. Nenhuma mudança foi aplicada; tente novamente em instantes ou escolha outro modelo gratuito.');
     } else if (status.includes('HTTP_400') || status.includes('HTTP_404') || status.includes('HTTP_422')) {
       await responseChannel.send('O OpenRouter recusou a solicitação para o modelo atual. Tente novamente; se persistir, o operador deve selecionar outro modelo gratuito. O motivo técnico foi registrado nos logs do serviço.');
     } else {
