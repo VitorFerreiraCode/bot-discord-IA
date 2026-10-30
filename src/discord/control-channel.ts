@@ -15,6 +15,10 @@ export async function ensureControlChannel(client: Client, guild: Guild): Promis
 
   const botId = client.user?.id;
   if (!botId) throw new Error('Discord client is not ready');
+  const [owner, botMember] = await Promise.all([
+    guild.members.fetch(guild.ownerId),
+    guild.members.fetch(botId),
+  ]);
   const rolePermissions = [...guild.roles.cache.values()]
     .filter((role) => role.id !== guild.roles.everyone.id && role.id !== botId)
     .map((role) => role.permissions.has(PermissionFlagsBits.ManageGuild)
@@ -29,7 +33,7 @@ export async function ensureControlChannel(client: Client, guild: Guild): Promis
       { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
       ...rolePermissions,
       {
-        id: botId,
+        id: botMember.id,
         allow: [
           PermissionFlagsBits.ViewChannel,
           PermissionFlagsBits.SendMessages,
@@ -39,7 +43,7 @@ export async function ensureControlChannel(client: Client, guild: Guild): Promis
         ],
       },
       {
-        id: guild.ownerId,
+        id: owner.id,
         allow: [
           PermissionFlagsBits.ViewChannel,
           PermissionFlagsBits.SendMessages,
