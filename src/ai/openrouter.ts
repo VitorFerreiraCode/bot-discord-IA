@@ -1,6 +1,8 @@
 export interface FreeModel {
   id: string;
   name: string;
+  contextLength: number;
+  supportsReasoning: boolean;
 }
 
 interface OpenRouterModel {
@@ -8,6 +10,7 @@ interface OpenRouterModel {
   name?: unknown;
   pricing?: { prompt?: unknown; completion?: unknown };
   supported_parameters?: unknown;
+  context_length?: unknown;
   architecture?: { output_modalities?: unknown };
 }
 
@@ -39,10 +42,37 @@ export async function listFreeChatModels(apiKey: string, forceRefresh = false): 
     .filter((model) => Number(model.pricing?.prompt) === 0 && Number(model.pricing?.completion) === 0)
     .filter((model) => Array.isArray(model.supported_parameters) && model.supported_parameters.includes('tools'))
     .filter((model) => typeof model.id === 'string' && model.id !== 'openrouter/free' && typeof model.name === 'string')
-    .map((model) => ({ id: model.id as string, name: model.name as string }))
+    .map((model) => ({
+      id: model.id as string,
+      name: model.name as string,
+      contextLength: typeof model.context_length === 'number' ? model.context_length : 0,
+      supportsReasoning: Array.isArray(model.supported_parameters) && model.supported_parameters.includes('reasoning'),
+    }))
     .slice(0, 24);
   freeModelCache = { expiresAt: Date.now() + 5 * 60_000, models };
   return models;
+}
+
+export function selectFreeModelForRequest(input: {
+  request: string;
+  history?: string;
+  preferredModel: string;
+  availableModels: FreeModel[];
+}): string {
+  const text = `${input.request}\n${input.history ?? ''}`;
+  const complex = text.length > 350
+    || /\b(?:delete|exclu(?:ir|i|a)|recrie|recriar|crie|criar|cargo|permiss[aã]o|categoria|todos os canais|todos os cargos|migre|migrar|diagn[oó]stico completo|corrija|conserte|arrume|organize|reorganize)\b/i.test(text)
+    || (text.match(/<[@#&!]\d+>/g)?.length ?? 0) >= 3;
+  const preferred = input.availableModels.find((model) => model.id === input.preferredModel);
+  if (!complex && preferred) return preferred.id;
+  if (!input.availableModels.length) return input.preferredModel;
+
+  if (complex) {
+    const reasoningModels = input.availableModels.filter((model) => model.supportsReasoning);
+    const candidates = reasoningModels.length ? reasoningModels : input.availableModels;
+    return [...candidates].sort((left, right) => right.contextLength - left.contextLength)[0]!.id;
+  }
+  return input.availableModels[0]!.id;
 }
 
 export async function validateOpenRouterKey(apiKey: string): Promise<void> {

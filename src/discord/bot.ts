@@ -51,9 +51,10 @@ async function deployGuildCommands(guildId: string): Promise<void> {
   console.log(`Registered ${commands.length} slash commands in guild ${guildId}.`);
 }
 
-export const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
-});
+const gatewayIntents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent];
+if (process.env.DISCORD_GUILD_MEMBERS_INTENT?.trim().toLowerCase() === 'true') gatewayIntents.push(GatewayIntentBits.GuildMembers);
+
+export const client = new Client({ intents: gatewayIntents });
 
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Bot conectado como ${readyClient.user.tag}.`);
@@ -186,12 +187,12 @@ async function getThreadHistory(message: Message): Promise<string | undefined> {
     .sort((left, right) => left.createdTimestamp - right.createdTimestamp)
     .map((entry) => {
       const embedText = entry.embeds.map((embed) => [embed.title, embed.description, ...embed.fields.map((field) => `${field.name}: ${field.value}`)].filter(Boolean).join('\n')).filter(Boolean).join('\n');
-      const content = [entry.content, embedText].filter(Boolean).join('\n').slice(0, 1200);
+      const content = [entry.content, embedText].filter(Boolean).join('\n').replace(/\s+/g, ' ').slice(0, 1200);
       return `${entry.author.bot ? 'Bot' : entry.author.username}: ${content}`;
     });
   const starter = await thread.fetchStarterMessage().catch(() => null);
   if (starter?.content.trim() && !entries.some((entry) => entry.includes(starter.content.slice(0, 80)))) {
-    entries.unshift(`${starter.author.username}: ${starter.content.slice(0, 900)}`);
+    entries.unshift(`${starter.author.username}: ${starter.content.replace(/\s+/g, ' ').slice(0, 900)}`);
   }
   return entries.slice(-20).join('\n').slice(-8000) || undefined;
 }
@@ -269,9 +270,9 @@ async function processRequest(message: Message): Promise<void> {
     await responseChannel.sendTyping();
     const history = await getThreadHistory(message);
     const result = await planDiscordRequest({ message, apiKey, model: config.modelId, maxOutputTokens: config.maxOutputTokens, history });
-    await recordUsageTokens(usageId, result.inputTokens, result.outputTokens);
+    await recordUsageTokens(usageId, result.inputTokens, result.outputTokens, result.modelId);
     const guildUsage = source === 'central' ? await getGuildMonthlyCentralUsage(message.guild.id).catch(() => null) : null;
-    const usageDescription = guildUsage === null ? '' : `\n\nUso da chave central neste servidor neste mês: **${guildUsage}/${config.guildMonthlyLimit} pedidos**.`;
+    const usageDescription = `${guildUsage === null ? '' : `\n\nUso da chave central neste servidor neste mês: **${guildUsage}/${config.guildMonthlyLimit} pedidos**.`}\n\nModelo gratuito selecionado: \`${result.modelId}\`.`;
     if (!result.plan) {
       const topicRows = responseChannel.isThread() ? topicChoiceRows() : [];
       await progressMessage.edit({ content: `${result.text.slice(0, 1600)}${usageDescription}${topicClosingQuestion}`.slice(0, 2000), embeds: [], components: topicRows, allowedMentions: { parse: [] } });
@@ -315,6 +316,8 @@ async function processRequest(message: Message): Promise<void> {
       errorMessage = 'O modelo gratuito demorou mais de 2 minutos e a tentativa automática com outro modelo também não terminou. Nenhuma mudança foi aplicada; tente novamente em instantes ou escolha outro modelo gratuito.';
     } else if (status.includes('HTTP_400') || status.includes('HTTP_404') || status.includes('HTTP_422')) {
       errorMessage = 'O OpenRouter recusou a solicitação para o modelo atual. Tente novamente; se persistir, o operador deve selecionar outro modelo gratuito. O motivo técnico foi registrado nos logs do serviço.';
+    } else if (status.includes('MODEL_NO_STRUCTURED_PLAN')) {
+      errorMessage = 'Tentei outros modelos gratuitos, mas nenhum retornou um plano de correção estruturado. Nenhuma mudança foi aplicada; tente reformular o pedido ou repita em instantes.';
     } else {
       errorMessage = 'Não consegui concluir a análise desta vez. Nenhuma mudança foi aplicada; tente novamente. Se continuar, o log do serviço registra o erro do provedor para o operador corrigir.';
     }
@@ -370,6 +373,12 @@ async function handleChangeButton(interaction: import('discord.js').ButtonIntera
       const failure = safeError(error);
       const reason = failure.includes('PROTECTED_ROLE')
         ? 'Bloqueei a exclusão porque o cargo é de administrador/dono ou é gerenciado pelo Discord.'
+        : failure.includes('BOT_GUILD_MEMBERS_INTENT_REQUIRED')
+          ? 'Para preservar todos os membros ao recriar o cargo, habilite Server Members Intent no Developer Portal e configure DISCORD_GUILD_MEMBERS_INTENT=true no Railway. Não excluí o cargo antigo.'
+        : failure.includes('ROLE_RECREATE_FAILED') && failure.includes('ROLLBACK_INCOMPLETE')
+          ? 'A substituição falhou e a reversão não terminou por completo. Confira os logs e a lista de cargos/membros antes de tentar de novo.'
+        : failure.includes('ROLE_RECREATE_FAILED')
+          ? 'A substituição falhou antes de concluir. O bot tentou reverter o cargo novo e manter o antigo; confira os logs antes de repetir.'
         : failure.includes('ROLE_ABOVE_BOT_HIERARCHY')
           ? 'O cargo está acima do cargo do bot na hierarquia do servidor.'
           : failure.includes('BOT_MISSING_MANAGE_ROLES')

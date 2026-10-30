@@ -35,10 +35,11 @@ Bot de Discord sem aplicação web para entender pedidos em linguagem natural, c
 - Permitir/remover visualização de um canal ou categoria para um membro ou cargo específico.
 - Permitir leitura do histórico de um canal/categoria para um membro ou cargo específico.
 - Criar cargos com permissões básicas seguras e excluir cargos comuns após confirmação explícita; cargos administrativos, do dono, `@everyone` e gerenciados são protegidos.
+- Recriar um cargo e migrar seus membros, preservando permissões não administrativas e configurando visibilidade/leitura do histórico na categoria e nos canais de texto. Requer Server Members Intent habilitado no portal e em `DISCORD_GUILD_MEMBERS_INTENT`.
 - Criar categoria.
 - Criar canal de texto público (usando as permissões da categoria, se houver) ou privado ao solicitante e administradores.
 
-O bot não apaga canais/cargos, não concede Administrator e não executa outras alterações até serem implementadas com validação própria. Se não houver ação suportada, ele explica o diagnóstico ou pede esclarecimento.
+O bot não apaga canais, não concede Administrator e não executa exclusões de cargos protegidos. Alterações e exclusões de cargos comuns só ocorrem após validação e confirmação.
 
 ## Uso e armazenamento de dados
 

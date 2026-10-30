@@ -160,8 +160,8 @@ export async function reserveUsage(
   }
 }
 
-export async function recordUsageTokens(id: string, inputTokens: number, outputTokens: number): Promise<void> {
-  await pool.query('UPDATE usage_events SET input_tokens = $2, output_tokens = $3 WHERE id = $1', [id, inputTokens, outputTokens]);
+export async function recordUsageTokens(id: string, inputTokens: number, outputTokens: number, modelId: string): Promise<void> {
+  await pool.query('UPDATE usage_events SET input_tokens = $2, output_tokens = $3, model_id = $4 WHERE id = $1', [id, inputTokens, outputTokens, modelId]);
 }
 
 export async function getGuildMonthlyCentralUsage(guildId: string): Promise<number> {

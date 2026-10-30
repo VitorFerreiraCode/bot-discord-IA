@@ -1,3 +1,17 @@
+export const SAFE_ROLE_PERMISSION_NAMES = [
+  'ViewChannel',
+  'ReadMessageHistory',
+  'SendMessages',
+  'Connect',
+  'Speak',
+  'UseApplicationCommands',
+  'AddReactions',
+  'EmbedLinks',
+  'AttachFiles',
+] as const;
+
+export type SafeRolePermission = typeof SAFE_ROLE_PERMISSION_NAMES[number];
+
 export type DiscordAction =
   | {
       type: 'set_channel_visibility';
@@ -17,7 +31,13 @@ export type DiscordAction =
   | {
       type: 'create_role';
       name: string;
-      permissions: Array<'ViewChannel' | 'ReadMessageHistory' | 'SendMessages' | 'Connect' | 'Speak' | 'UseApplicationCommands' | 'AddReactions' | 'EmbedLinks' | 'AttachFiles'>;
+      permissions: SafeRolePermission[];
+      reason: string;
+    }
+  | {
+      type: 'recreate_role_for_category';
+      roleId: string;
+      categoryId: string;
       reason: string;
     }
   | {
