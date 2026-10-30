@@ -145,8 +145,9 @@ function parseActions(value: unknown, message: Message): DiscordAction[] {
       const targetType = action.targetType;
       if (targetType !== 'member' && targetType !== 'role') throw new Error('INVALID_TARGET_TYPE');
       if (typeof action.visible !== 'boolean') throw new Error('INVALID_VISIBILITY');
-      const controlChannel = guild.channels.cache.get(message.channelId);
-      if (!guild.channels.cache.has(channelId) || channelId === message.channelId || controlChannel?.parentId === channelId) throw new Error('CHANNEL_NOT_IN_GUILD_OR_CONTROL_CHANNEL');
+      const controlChannelId = message.channel.isThread() ? message.channel.parentId : message.channelId;
+      const controlChannel = controlChannelId ? guild.channels.cache.get(controlChannelId) : null;
+      if (!guild.channels.cache.has(channelId) || channelId === message.channelId || channelId === controlChannelId || controlChannel?.parentId === channelId) throw new Error('CHANNEL_NOT_IN_GUILD_OR_CONTROL_CHANNEL');
       if (targetType === 'role' && (!guild.roles.cache.has(targetId) || targetId === guild.roles.everyone.id)) throw new Error('ROLE_NOT_IN_GUILD');
       if (targetType === 'member' && !guild.members.cache.has(targetId) && !message.mentions.users.has(targetId)) throw new Error('MEMBER_NOT_IN_GUILD');
       return { type: 'set_channel_visibility', channelId, targetType, targetId, visible: action.visible, reason };
@@ -176,17 +177,13 @@ export async function planDiscordRequest(input: {
   apiKey: string;
   model: string;
   maxOutputTokens: number;
+  history?: string;
 }): Promise<{ text: string; plan: ProposedPlan | null; inputTokens: number; outputTokens: number }> {
   for (const user of [...input.message.mentions.users.values()].slice(0, 10)) {
     if (!input.message.guild!.members.cache.has(user.id)) await input.message.guild!.members.fetch(user.id).catch(() => null);
   }
   const requestText = input.message.content.trim().slice(0, 3000);
-  const completion = await createChatCompletion({
-    apiKey: input.apiKey,
-    model: input.model,
-    maxOutputTokens: input.maxOutputTokens,
-    tools: [planTool],
-    messages: [
+  const messages: Array<{ role: 'system' | 'user'; content: string }> = [
       {
         role: 'system',
         content: [
@@ -203,10 +200,25 @@ export async function planDiscordRequest(input: {
       },
       {
         role: 'user',
-        content: `Pedido do membro:\n${requestText}\n\nEstado atual do servidor (JSON):\n${buildSnapshot(input.message)}`,
+        content: `${input.history ? `Histórico anterior deste tópico:\n${input.history}\n\n` : ''}Pedido atual do membro:\n${requestText}\n\nEstado atual do servidor (JSON):\n${buildSnapshot(input.message)}`,
       },
-    ],
+    ];
+  const request = (model: string) => createChatCompletion({
+    apiKey: input.apiKey,
+    model,
+    maxOutputTokens: input.maxOutputTokens,
+    tools: [planTool],
+    messages,
   });
+  let completion;
+  try {
+    completion = await request(input.model);
+  } catch (error) {
+    const failure = error instanceof Error ? error.message : '';
+    if (input.model === 'openrouter/free' || !/OPENROUTER_CHAT_HTTP_(400|404|422|429|500|502|503)/.test(failure)) throw error;
+    console.warn(`Model ${input.model} failed; retrying through openrouter/free: ${failure.slice(0, 240)}`);
+    completion = await request('openrouter/free');
+  }
 
   const call = completion.toolCalls.find((tool) => tool.name === 'propose_discord_changes');
   if (!call) return { text: completion.content || 'Não consegui formular um diagnóstico. Tente explicar o que deve acontecer e mencionar o membro/canal envolvido.', plan: null, inputTokens: completion.inputTokens, outputTokens: completion.outputTokens };

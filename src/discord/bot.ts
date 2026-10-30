@@ -12,6 +12,7 @@ import {
   type ChatInputCommandInteraction,
   type Guild,
   type Message,
+  type ThreadChannel,
   type TextChannel,
 } from 'discord.js';
 import { randomUUID } from 'node:crypto';
@@ -27,6 +28,7 @@ import {
   createPendingChange,
   deleteUserKey,
   getControlChannel,
+  getGuildMonthlyCentralUsage,
   getServiceConfig,
   getUserKey,
   isAuthorized,
@@ -156,12 +158,39 @@ function actionRows(changeId: string): ActionRowBuilder<ButtonBuilder>[] {
   )];
 }
 
+function shouldOpenThread(requestText: string): boolean {
+  const clauses = requestText.split(/[.!?\n]+|\b(?:além disso|também|e ainda|por outro lado)\b/i).filter((part) => part.trim().length > 35);
+  return requestText.length >= 280
+    || clauses.length >= 3
+    || /\b(?:servidor inteiro|todas as permissões|todos os canais|organize o servidor|reorganize o servidor|auditoria completa|diagnóstico completo|em massa)\b/i.test(requestText)
+    || (requestText.length >= 150 && /\b(?:vários|varias|múltipl|permissões|categorias|canais|organizar|reorganizar|diagnosticar)\b/i.test(requestText));
+}
+
+async function getThreadHistory(message: Message): Promise<string | undefined> {
+  if (!message.channel.isThread()) return undefined;
+  const thread = message.channel as ThreadChannel;
+  const recent = await thread.messages.fetch({ limit: 20 }).catch(() => null);
+  if (!recent) return undefined;
+  const entries = [...recent.values()]
+    .filter((entry) => entry.id !== message.id && entry.content.trim())
+    .sort((left, right) => left.createdTimestamp - right.createdTimestamp)
+    .map((entry) => `${entry.author.bot ? 'Bot' : entry.author.username}: ${entry.content.slice(0, 900)}`);
+  const starter = await thread.fetchStarterMessage().catch(() => null);
+  if (starter?.content.trim() && !entries.some((entry) => entry.includes(starter.content.slice(0, 80)))) {
+    entries.unshift(`${starter.author.username}: ${starter.content.slice(0, 900)}`);
+  }
+  return entries.slice(-20).join('\n').slice(-8000) || undefined;
+}
+
 async function processRequest(message: Message): Promise<void> {
   if (!message.guild) return;
   if (!await memberCanUse(message.guild, message.author.id)) return;
-  if (message.channelId !== await getControlChannel(message.guild.id)) return;
+  const controlChannelId = await getControlChannel(message.guild.id);
+  const isControlThread = message.channel.isThread() && message.channel.parentId === controlChannelId;
+  if (message.channelId !== controlChannelId && !isControlThread) return;
   const requestText = message.content.trim();
   if (!requestText) return;
+  let responseChannel: TextChannel | ThreadChannel = message.channel as TextChannel | ThreadChannel;
 
   const config = await getServiceConfig();
   if (!config) {
@@ -213,14 +242,23 @@ async function processRequest(message: Message): Promise<void> {
   }
 
   try {
-    if (source === 'central') {
-      await message.reply(`Este pedido usará a chave central do serviço. Limites configurados: ${config.userDailyLimit} pedidos por pessoa/dia e ${config.guildMonthlyLimit} por servidor/mês.`);
+    if (!isControlThread && shouldOpenThread(requestText)) {
+      try {
+        const title = requestText.replace(/<[@#&!]\d+>/g, '').replace(/[^\p{L}\p{N} _-]/gu, '').trim().slice(0, 85) || 'análise detalhada';
+        responseChannel = await message.startThread({ name: `Pedido: ${title}`, autoArchiveDuration: 1440 });
+        await responseChannel.send('Este pedido parece envolver uma análise mais detalhada. Vou manter as respostas e o contexto neste tópico; continue a conversa aqui para eu considerar o histórico.');
+      } catch (error) {
+        console.warn(`Could not create request thread for message ${message.id}:`, safeError(error));
+      }
     }
-    await (message.channel as TextChannel).sendTyping();
-    const result = await planDiscordRequest({ message, apiKey, model: config.modelId, maxOutputTokens: config.maxOutputTokens });
+    await responseChannel.sendTyping();
+    const history = await getThreadHistory(message);
+    const result = await planDiscordRequest({ message, apiKey, model: config.modelId, maxOutputTokens: config.maxOutputTokens, history });
     await recordUsageTokens(usageId, result.inputTokens, result.outputTokens);
+    const guildUsage = source === 'central' ? await getGuildMonthlyCentralUsage(message.guild.id).catch(() => null) : null;
+    const usageDescription = guildUsage === null ? '' : `\n\nUso da chave central neste servidor neste mês: **${guildUsage}/${config.guildMonthlyLimit} pedidos**.`;
     if (!result.plan) {
-      await message.reply({ content: result.text.slice(0, 1900), allowedMentions: { parse: [] } });
+      await responseChannel.send({ content: `${result.text.slice(0, 1800)}${usageDescription}`.slice(0, 2000), allowedMentions: { parse: [] } });
       return;
     }
 
@@ -230,18 +268,18 @@ async function processRequest(message: Message): Promise<void> {
     await createPendingChange({
       id,
       guildId: message.guild.id,
-      channelId: message.channelId,
+      channelId: responseChannel.id,
       requestedBy: message.author.id,
       summary: result.plan.summary,
       actions,
       expiresAt,
     });
-    const actionDescription = actions.map((action) => describeAction(message.guild!, action)).join('\n').slice(0, 1800);
+    const actionDescription = actions.map((action) => describeAction(message.guild!, action)).join('\n').slice(0, 1500);
     const embed = new EmbedBuilder()
       .setTitle('Diagnóstico e proposta de alteração')
-      .setDescription(`${result.plan.summary.slice(0, 1500)}\n\n**Ações propostas**\n${actionDescription}`)
+      .setDescription(`${result.plan.summary.slice(0, 900)}\n\n**Ações propostas**\n${actionDescription}${usageDescription}`.slice(0, 4000))
       .setFooter({ text: 'Nada será alterado sem confirmação. Esta proposta expira em 5 minutos.' });
-    await message.reply({
+    await responseChannel.send({
       embeds: [embed],
       components: actionRows(id),
       allowedMentions: { parse: [], users: [], roles: [] },
@@ -250,13 +288,15 @@ async function processRequest(message: Message): Promise<void> {
     console.error(`AI request failed for guild ${message.guild.id}:`, safeError(error));
     const status = safeError(error);
     if (status.includes('HTTP_401')) {
-      await message.reply(source === 'personal'
+      await responseChannel.send(source === 'personal'
         ? 'Sua chave pessoal foi recusada pelo OpenRouter. Não usei a chave central como alternativa. Remova/substitua sua chave com `/bot-chave-remover`.'
         : 'A chave central do OpenRouter foi recusada. O operador precisa revisar `OPENROUTER_API_KEY`.');
     } else if (status.includes('HTTP_429')) {
-      await message.reply('O OpenRouter limitou temporariamente este modelo. Aguarde ou escolha outro modelo gratuito na configuração global.');
+      await responseChannel.send('O OpenRouter limitou temporariamente este modelo. Aguarde ou escolha outro modelo gratuito na configuração global.');
+    } else if (status.includes('HTTP_400') || status.includes('HTTP_404') || status.includes('HTTP_422')) {
+      await responseChannel.send('O OpenRouter recusou a solicitação para o modelo atual. Tente novamente; se persistir, o operador deve selecionar outro modelo gratuito. O motivo técnico foi registrado nos logs do serviço.');
     } else {
-      await message.reply('Não consegui concluir a análise. Nenhuma mudança foi aplicada; tente novamente ou peça ao operador para revisar o modelo selecionado.');
+      await responseChannel.send('Não consegui concluir a análise desta vez. Nenhuma mudança foi aplicada; tente novamente. Se continuar, o log do serviço registra o erro do provedor para o operador corrigir.');
     }
   }
 }
@@ -351,7 +391,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
 client.on(Events.MessageCreate, async (message) => {
   if (!message.guild || message.author.bot) return;
   try {
-    if (message.channelId !== await getControlChannel(message.guild.id)) return;
+    const controlChannelId = await getControlChannel(message.guild.id);
+    const isControlThread = message.channel.isThread() && message.channel.parentId === controlChannelId;
+    if (message.channelId !== controlChannelId && !isControlThread) return;
     const keyMatch = message.content.match(/sk-or-v1-[A-Za-z0-9_-]{20,}/);
     if (keyMatch) {
       if (await memberCanUse(message.guild, message.author.id)) await handleKeyMessage(message, keyMatch[0]);

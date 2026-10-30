@@ -79,7 +79,18 @@ export async function createChatCompletion(input: {
     }),
     signal: AbortSignal.timeout(60_000),
   });
-  if (!response.ok) throw new Error(`OPENROUTER_CHAT_HTTP_${response.status}`);
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => '');
+    let detail = errorBody;
+    try {
+      const parsed = JSON.parse(errorBody) as { error?: { message?: unknown; code?: unknown } };
+      const apiError = parsed.error;
+      if (apiError) detail = [apiError.code, apiError.message].filter((part) => part !== undefined).join(': ');
+    } catch {
+      // Keep the raw response text for diagnostics when the provider returns non-JSON.
+    }
+    throw new Error(`OPENROUTER_CHAT_HTTP_${response.status}${detail ? `: ${detail.slice(0, 500)}` : ''}`);
+  }
   const body = await response.json() as {
     choices?: Array<{ message?: { content?: unknown; tool_calls?: Array<{ function?: { name?: string; arguments?: string } }> } }>;
     usage?: { prompt_tokens?: number; completion_tokens?: number };

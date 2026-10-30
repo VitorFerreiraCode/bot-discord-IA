@@ -164,6 +164,16 @@ export async function recordUsageTokens(id: string, inputTokens: number, outputT
   await pool.query('UPDATE usage_events SET input_tokens = $2, output_tokens = $3 WHERE id = $1', [id, inputTokens, outputTokens]);
 }
 
+export async function getGuildMonthlyCentralUsage(guildId: string): Promise<number> {
+  const result = await pool.query<{ count: string }>(
+    `SELECT COUNT(*)::text AS count FROM usage_events
+     WHERE guild_id = $1 AND source = 'central'
+       AND created_at >= date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,
+    [guildId],
+  );
+  return Number(result.rows[0]?.count ?? 0);
+}
+
 export async function createPendingChange(input: {
   id: string;
   guildId: string;
