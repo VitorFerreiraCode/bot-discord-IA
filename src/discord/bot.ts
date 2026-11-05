@@ -168,6 +168,15 @@ async function handleBotStatus(interaction: ChatInputCommandInteraction): Promis
   const missingPermissions = botMember ? requiredPermissions.filter(([, permission]) => !botMember.permissions.has(permission)).map(([label]) => label) : requiredPermissions.map(([label]) => label);
   lines.push(missingPermissions.length ? `Permissões globais do bot ausentes: ${missingPermissions.join(', ')}` : 'Permissões globais do bot: ✅ completas');
   lines.push(`Silenciar/desmutar membros (opcional): ${botMember?.permissions.has(PermissionFlagsBits.MuteMembers) ? '✅ disponível' : '⚠️ sem permissão Mute Members'}`);
+  const messagePermissions: Array<[string, bigint]> = [
+    ['Enviar mensagens', PermissionFlagsBits.SendMessages],
+    ['Enviar mensagens em tópicos', PermissionFlagsBits.SendMessagesInThreads],
+    ['Inserir links (embeds)', PermissionFlagsBits.EmbedLinks],
+    ['Fixar mensagens', PermissionFlagsBits.PinMessages],
+    ['Conectar (canais de voz privados)', PermissionFlagsBits.Connect],
+  ];
+  const missingMessagePermissions = messagePermissions.filter(([, permission]) => !botMember?.permissions.has(permission)).map(([label]) => label);
+  lines.push(missingMessagePermissions.length ? `Mensagens e voz: ⚠️ faltam ${missingMessagePermissions.join(', ')}` : 'Mensagens e voz: ✅ enviar, editar, fixar e criar canais de voz privados');
   lines.push(`Cargo mais alto do bot: ${botMember?.roles.highest.name ?? 'não encontrado'} (posição ${botMember?.roles.highest.position ?? '—'})`);
 
   const controlId = await getControlChannel(guild.id).catch(() => null);
@@ -259,6 +268,10 @@ function auditMetadata(actions: DiscordAction[]): unknown[] {
     if ('name' in action) entry.name = action.name;
     if (action.type === 'edit_channel') entry.changedFields = Object.keys(action.changes);
     if (action.type === 'edit_role') entry.changedFields = Object.keys(action.changes);
+    if (action.type === 'edit_category') entry.changedFields = Object.keys(action.changes);
+    if ('messageId' in action) entry.messageId = action.messageId;
+    if (action.type === 'pin_message') entry.pinned = action.pinned;
+    if (action.type === 'send_message') { entry.hasEmbed = Boolean(action.embed); entry.notifyMentions = action.notifyMentions; }
     if (action.type === 'set_member_role') entry.assigned = action.assigned;
     if (action.type === 'configure_onboarding_question') entry.onboardingQuestion = action.title.slice(0, 100);
     if (action.type === 'edit_welcome_screen') entry.welcomeScreenChanged = true;

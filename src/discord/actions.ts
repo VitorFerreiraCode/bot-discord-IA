@@ -1,17 +1,20 @@
 import {
   ChannelType,
+  EmbedBuilder,
   GatewayIntentBits,
   GuildOnboardingMode,
   PermissionFlagsBits,
   type Guild,
   type GuildOnboardingPromptData,
+  type GuildBasedChannel,
   type GuildMember,
+  type Message,
   type PermissionOverwriteOptions,
   type Role,
   type TextChannel,
 } from 'discord.js';
-import type { ChannelPermissionChanges, ChannelPermissionName, DiscordAction } from '../ai/actions.js';
-import { isProtectedRole } from '../security/discord-rules.js';
+import type { ChannelPermissionChanges, ChannelPermissionName, DiscordAction, MessageEmbedInput } from '../ai/actions.js';
+import { containsMassMention, isProtectedRole } from '../security/discord-rules.js';
 import { applyWithRollback, PartialApplyError } from './transaction.js';
 
 interface PermissionOverwriteState {
@@ -73,7 +76,64 @@ export function describeAction(guild: Guild, action: DiscordAction): string {
     return `• ${action.visible ? 'Permitir' : 'Remover'} visualização de ${target} em <#${action.channelId}>${channel ? ` (#${channel.name})` : ''}. Motivo: ${action.reason}`;
   }
   if (action.type === 'create_category') return `• Criar categoria **${action.name}**. Motivo: ${action.reason}`;
+  if (action.type === 'create_voice_channel') {
+    const extras = [action.userLimit ? `limite de ${action.userLimit} pessoa(s)` : '', action.bitrate ? `bitrate ${Math.round(action.bitrate / 1000)} kbps` : ''].filter(Boolean).join(', ');
+    return `• Criar canal de voz 🔊 **${action.name}**${action.categoryId ? ` em <#${action.categoryId}>` : ''}${action.privateToRequester ? ' privado para quem pediu e administradores' : ' com as permissões da categoria/servidor'}${extras ? ` (${extras})` : ''}. Motivo: ${action.reason}`;
+  }
+  if (action.type === 'edit_category') {
+    const category = guild.channels.cache.get(action.categoryId);
+    const changes = [action.changes.name ? `nome → **${action.changes.name}**` : '', action.changes.position !== undefined ? `posição → ${action.changes.position}` : ''].filter(Boolean).join(', ');
+    return `• Editar a categoria **${category?.name ?? action.categoryId}**: ${changes}. Motivo: ${action.reason}`;
+  }
+  if (action.type === 'send_message') {
+    const preview = action.content ? `\n  > ${truncate(action.content, 300).replace(/\n/g, '\n  > ')}` : '';
+    const embed = action.embed ? `\n  Embed: ${action.embed.title ? `**${truncate(action.embed.title, 100)}** — ` : ''}${truncate(action.embed.description ?? '', 200)}` : '';
+    const mentionNote = !action.notifyMentions
+      ? ' Menções não notificam ninguém.'
+      : containsMassMention(`${action.content ?? ''} ${action.embed?.description ?? ''}`)
+        ? ' ⚠️ Vai notificar @everyone/@here (todo o servidor ou quem está online).'
+        : ' ⚠️ Menções citadas na mensagem serão notificadas.';
+    return `• Enviar mensagem em <#${action.channelId}>.${mentionNote} Motivo: ${action.reason}${preview}${embed}`;
+  }
+  if (action.type === 'edit_message') {
+    const preview = action.content !== undefined ? `\n  Novo texto:\n  > ${truncate(action.content, 300).replace(/\n/g, '\n  > ')}` : '';
+    const embed = action.embed === null ? '\n  Embed: remover' : action.embed ? `\n  Novo embed: ${action.embed.title ? `**${truncate(action.embed.title, 100)}** — ` : ''}${truncate(action.embed.description ?? '', 200)}` : '';
+    return `• Editar a mensagem ${messageLink(guild, action.channelId, action.messageId)} do bot. Motivo: ${action.reason}${preview}${embed}`;
+  }
+  if (action.type === 'delete_message') return `• Excluir a mensagem ${messageLink(guild, action.channelId, action.messageId)}. Essa ação não pode ser desfeita. Motivo: ${action.reason}`;
+  if (action.type === 'pin_message') return `• ${action.pinned ? 'Fixar' : 'Desafixar'} a mensagem ${messageLink(guild, action.channelId, action.messageId)}. Motivo: ${action.reason}`;
   return `• Criar canal #${action.name}${action.categoryId ? ` em <#${action.categoryId}>` : ''}${action.privateToRequester ? ' privado para quem pediu' : ' com as permissões padrão do servidor'}. Motivo: ${action.reason}`;
+}
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function messageLink(guild: Guild, channelId: string, messageId: string): string {
+  return `https://discord.com/channels/${guild.id}/${channelId}/${messageId}`;
+}
+
+async function fetchTargetMessage(guild: Guild, channelId: string, messageId: string): Promise<Message> {
+  const channel = await guild.channels.fetch(channelId).catch(() => null);
+  if (!channel || !channel.isTextBased()) throw new Error('MESSAGE_CHANNEL_NOT_FOUND');
+  const message = await channel.messages.fetch(messageId).catch(() => null);
+  if (!message) throw new Error('MESSAGE_NOT_FOUND');
+  return message;
+}
+
+function buildEmbed(embed: MessageEmbedInput): EmbedBuilder {
+  const builder = new EmbedBuilder();
+  if (embed.title) builder.setTitle(embed.title);
+  if (embed.description) builder.setDescription(embed.description);
+  if (embed.color !== undefined) builder.setColor(embed.color);
+  return builder;
+}
+
+/** Confere no canal alvo as permissões que o bot precisa para a ação de mensagem. */
+function assertBotChannelPermissions(guild: Guild, channel: GuildBasedChannel, required: Array<[bigint, string]>): void {
+  const permissions = guild.members.me ? channel.permissionsFor(guild.members.me) : null;
+  const missing = required.filter(([flag]) => !permissions?.has(flag)).map(([, code]) => code);
+  if (missing.length) throw new Error(`BOT_MISSING_CHANNEL_PERMISSIONS:${missing.join(',')}`);
 }
 
 function permissionValue(overwrite: PermissionOverwriteState | undefined, permission: ChannelPermissionName): boolean | null {
@@ -99,6 +159,15 @@ function countCachedMemberDenies(guild: Guild, channel: { permissionOverwrites: 
 
 export async function describeActionImpact(guild: Guild, action: DiscordAction): Promise<string> {
   const base = describeAction(guild, action);
+  if (action.type === 'edit_message' || action.type === 'delete_message' || action.type === 'pin_message') {
+    const target = await fetchTargetMessage(guild, action.channelId, action.messageId).catch(() => null);
+    if (!target) return `${base}\n  Atenção: não encontrei essa mensagem; a execução vai falhar se ela não existir.`;
+    const author = target.author.id === guild.client.user.id ? 'este bot' : `<@${target.author.id}>`;
+    const current = target.content ? truncate(target.content, 300).replace(/\n/g, '\n  > ') : '(sem texto; só embed/anexo)';
+    const authorNote = action.type === 'edit_message' && target.author.id !== guild.client.user.id ? '\n  Atenção: o Discord só permite editar mensagens escritas pelo próprio bot; essa ação vai falhar.' : '';
+    const pinNote = action.type === 'pin_message' && target.pinned === action.pinned ? `\n  Observação: a mensagem já está ${action.pinned ? 'fixada' : 'desafixada'}.` : '';
+    return `${base}\n  Mensagem atual (autor: ${author}):\n  > ${current}${authorNote}${pinNote}`;
+  }
   if (action.type === 'set_voice_mute') {
     const member = await guild.members.fetch(action.memberId).catch(() => null);
     const current = !member ? 'não foi possível consultar' : !member.voice.channelId ? 'membro não está conectado a um canal de voz' : member.voice.serverMute ? 'ativo' : 'inativo';
@@ -298,8 +367,9 @@ export async function applyDiscordAction(
 ): Promise<string> {
   const botMember = guild.members.me;
   const roleAction = action.type === 'create_role' || action.type === 'delete_role' || action.type === 'edit_role' || action.type === 'set_member_role';
-  const needsManageRoles = roleAction || action.type === 'allow_read_history' || action.type === 'set_channel_permissions' || action.type === 'set_category_permissions' || action.type === 'set_channel_visibility' || action.type === 'create_text_channel' || action.type === 'recreate_role_for_category';
-  const needsManageChannels = ['allow_read_history', 'set_channel_permissions', 'set_category_permissions', 'set_channel_visibility', 'create_category', 'create_text_channel', 'edit_channel', 'delete_channel', 'recreate_role_for_category'].includes(action.type);
+  const needsManageRoles = roleAction || action.type === 'allow_read_history' || action.type === 'set_channel_permissions' || action.type === 'set_category_permissions' || action.type === 'set_channel_visibility' || action.type === 'recreate_role_for_category'
+    || action.type === 'create_text_channel' || action.type === 'create_voice_channel';
+  const needsManageChannels = ['allow_read_history', 'set_channel_permissions', 'set_category_permissions', 'set_channel_visibility', 'create_category', 'create_text_channel', 'create_voice_channel', 'edit_category', 'edit_channel', 'delete_channel', 'recreate_role_for_category'].includes(action.type);
   if (!botMember) throw new Error('BOT_MEMBER_NOT_CACHED');
   if (needsManageRoles && !botMember.permissions.has(PermissionFlagsBits.ManageRoles)) throw new Error('BOT_MISSING_MANAGE_ROLES');
   if (needsManageChannels && !botMember.permissions.has(PermissionFlagsBits.ManageChannels)) throw new Error('BOT_MISSING_MANAGE_CHANNELS');
@@ -602,6 +672,59 @@ export async function applyDiscordAction(
     return `Atualizei a permissão de visualização em #${channel.name}.`;
   }
 
+  if (action.type === 'edit_category') {
+    const category = await guild.channels.fetch(action.categoryId);
+    if (!category || category.type !== ChannelType.GuildCategory) throw new Error('CATEGORY_NOT_FOUND');
+    const previousName = category.name;
+    await category.edit({ ...action.changes, reason });
+    return `Atualizei a categoria **${previousName}**${action.changes.name ? ` (agora **${action.changes.name}**)` : ''}.`;
+  }
+
+  if (action.type === 'send_message') {
+    const channel = await guild.channels.fetch(action.channelId).catch(() => null);
+    if (!channel || !channel.isTextBased() || !('send' in channel)) throw new Error('MESSAGE_CHANNEL_NOT_FOUND');
+    assertBotChannelPermissions(guild, channel, [
+      [PermissionFlagsBits.ViewChannel, 'ViewChannel'],
+      [channel.isThread() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages, channel.isThread() ? 'SendMessagesInThreads' : 'SendMessages'],
+      ...(action.embed ? [[PermissionFlagsBits.EmbedLinks, 'EmbedLinks'] as [bigint, string]] : []),
+    ]);
+    const sent = await channel.send({
+      ...(action.content ? { content: action.content } : {}),
+      ...(action.embed ? { embeds: [buildEmbed(action.embed)] } : {}),
+      allowedMentions: action.notifyMentions ? { parse: ['users', 'roles', 'everyone'] } : { parse: [] },
+    });
+    return `Enviei a mensagem em <#${channel.id}>: ${sent.url}`;
+  }
+
+  if (action.type === 'edit_message') {
+    const target = await fetchTargetMessage(guild, action.channelId, action.messageId);
+    if (target.author.id !== guild.client.user.id) throw new Error('CAN_ONLY_EDIT_OWN_MESSAGES');
+    await target.edit({
+      ...(action.content === undefined ? {} : { content: action.content }),
+      ...(action.embed === undefined ? {} : { embeds: action.embed ? [buildEmbed(action.embed)] : [] }),
+      allowedMentions: { parse: [] },
+    });
+    return `Editei a mensagem ${target.url}.`;
+  }
+
+  if (action.type === 'delete_message') {
+    const target = await fetchTargetMessage(guild, action.channelId, action.messageId);
+    if (target.author.id !== guild.client.user.id) {
+      assertBotChannelPermissions(guild, target.channel as GuildBasedChannel, [[PermissionFlagsBits.ManageMessages, 'ManageMessages']]);
+    }
+    await target.delete();
+    return `Excluí a mensagem de ${target.author.id === guild.client.user.id ? 'este bot' : `<@${target.author.id}>`} em <#${target.channelId}>.`;
+  }
+
+  if (action.type === 'pin_message') {
+    const target = await fetchTargetMessage(guild, action.channelId, action.messageId);
+    assertBotChannelPermissions(guild, target.channel as GuildBasedChannel, [[PermissionFlagsBits.PinMessages, 'PinMessages']]);
+    if (target.pinned === action.pinned) return `A mensagem já estava ${action.pinned ? 'fixada' : 'desafixada'}: ${target.url}`;
+    if (action.pinned) await target.pin(reason);
+    else await target.unpin(reason);
+    return `${action.pinned ? 'Fixei' : 'Desafixei'} a mensagem ${target.url}.`;
+  }
+
   if (action.type === 'create_category') {
     const created = await guild.channels.create({
       name: action.name,
@@ -611,7 +734,10 @@ export async function applyDiscordAction(
     return `Criei a categoria ${created.name}.`;
   }
 
-  if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) throw new Error('BOT_MISSING_MANAGE_ROLES');
+  const isVoice = action.type === 'create_voice_channel';
+  const memberAccess = isVoice
+    ? [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak]
+    : [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory];
   const parent = action.categoryId ? await guild.channels.fetch(action.categoryId) : null;
   if (parent && parent.type !== ChannelType.GuildCategory) throw new Error('CATEGORY_NOT_FOUND');
   const syncedOverwrites = parent && 'permissionOverwrites' in parent
@@ -623,20 +749,30 @@ export async function applyDiscordAction(
         ...[...guild.roles.cache.values()]
           .filter((role) => role.id !== guild.roles.everyone.id && role.id !== botMember.id)
           .map((role) => role.permissions.has(PermissionFlagsBits.ManageGuild)
-            ? { id: role.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
+            ? { id: role.id, allow: memberAccess }
             : { id: role.id, deny: [PermissionFlagsBits.ViewChannel] }),
-        { id: requesterId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-        { id: botMember.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+        { id: requesterId, allow: memberAccess },
+        { id: botMember.id, allow: [PermissionFlagsBits.ViewChannel, ...(isVoice ? [PermissionFlagsBits.Connect] : [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory])] },
       ]
     : syncedOverwrites;
-  const created = await guild.channels.create({
-    name: action.name,
-    type: ChannelType.GuildText,
-    parent: parent?.id,
-    permissionOverwrites: overwrites,
-    reason,
-  });
-  return `Criei o canal <#${created.id}>.`;
+  const created = isVoice
+    ? await guild.channels.create({
+        name: action.name,
+        type: ChannelType.GuildVoice,
+        parent: parent?.id,
+        permissionOverwrites: overwrites,
+        ...(action.userLimit === undefined ? {} : { userLimit: action.userLimit }),
+        ...(action.bitrate === undefined ? {} : { bitrate: Math.min(action.bitrate, guild.maximumBitrate) }),
+        reason,
+      })
+    : await guild.channels.create({
+        name: action.name,
+        type: ChannelType.GuildText,
+        parent: parent?.id,
+        permissionOverwrites: overwrites,
+        reason,
+      });
+  return `Criei o canal ${isVoice ? 'de voz ' : ''}<#${created.id}>.`;
 }
 
 function roleIsProtectedAtRuntime(guild: Guild, role: Role): boolean {

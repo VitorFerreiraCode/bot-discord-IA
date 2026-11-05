@@ -40,8 +40,16 @@ Bot de Discord sem aplicação web para entender pedidos em linguagem natural, c
 - Criar cargos com permissões básicas seguras e excluir cargos comuns após confirmação explícita; cargos administrativos, do dono, `@everyone` e gerenciados são protegidos.
 - Recriar um cargo e migrar seus membros, preservando permissões não administrativas e configurando visibilidade/leitura do histórico na categoria e nos canais de texto. Requer Server Members Intent habilitado no portal e em `DISCORD_GUILD_MEMBERS_INTENT`.
 - Ajustar server mute de um membro mencionado somente quando o pedido atual disser explicitamente para desmutar/mutar e o bot tiver `MuteMembers`. Self mute é uma ação do próprio usuário; permitir `Speak` não o remove.
-- Criar categoria.
+- Criar categoria e editar nome/posição de uma categoria (`edit_category`). A categoria do canal de controle é protegida.
 - Criar canal de texto público (usando as permissões da categoria, se houver) ou privado ao solicitante e administradores.
+- Criar canal de voz (`create_voice_channel`) público ou privado, com limite de pessoas e bitrate opcionais (bitrate limitado ao máximo do nível de impulso do servidor). Canais de voz privados liberam ViewChannel/Connect/Speak ao solicitante e aos cargos de administração.
+- Editar canais respeitando o tipo: categoria aceita nome/posição; voz aceita limite/bitrate; texto aceita tópico. Todos aceitam `position`.
+- Enviar mensagem (`send_message`) com texto e/ou embed (título, descrição, cor). Por padrão nenhuma menção notifica; `notifyMentions` só é usado se o pedido mandar marcar alguém, e a prévia avisa quando `@everyone`/`@here` vai notificar.
+- Editar mensagem (`edit_message`) somente se o autor for o próprio bot; a prévia mostra o texto atual.
+- Fixar/desafixar mensagem (`pin_message`), exigindo Pin Messages no canal.
+- Excluir mensagem (`delete_message`) somente com pedido explícito na mensagem atual (sem negação); mensagens de terceiros exigem Manage Messages.
+- Mensagens do canal de controle e de seus tópicos não podem ser enviadas, editadas, fixadas ou excluídas pelo planejador.
+- Para localizar mensagens, o retrato anexa (só quando o pedido fala de mensagens) as 10 mais recentes de até 3 canais mencionados e as mensagens de links colados. Conteúdo de mensagens não entra na auditoria; apenas IDs e flags.
 
 O bot não apaga canais, não concede Administrator e não executa exclusões de cargos protegidos. Alterações e exclusões de cargos comuns só ocorrem após validação e confirmação.
 

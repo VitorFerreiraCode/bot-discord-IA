@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseChannelPermissionChanges } from '../ai/planner.js';
-import { isKnownDiscordEntity, isProtectedRole, hasNegatedDestructiveIntent, isProviderTimeout, proposalExpiresAt } from '../security/discord-rules.js';
+import { containsMassMention, explicitlyRequestsMessageDeletion, isKnownDiscordEntity, isProtectedRole, hasNegatedDestructiveIntent, isProviderTimeout, parseDiscordMessageLinks, proposalExpiresAt, requestMentionsMessages } from '../security/discord-rules.js';
 import { applyWithRollback, PartialApplyError } from '../discord/transaction.js';
 
 test('negações e cancelamentos bloqueiam intenção destrutiva, mas relato de problema não', () => {
@@ -62,4 +62,32 @@ test('reporta falha da própria reversão parcial', async () => {
     applyWithRollback([1], async () => { throw new Error('apply failed'); }, async () => { throw new Error('rollback failed'); }),
     (error: unknown) => error instanceof PartialApplyError && error.rollbackFailures === 1,
   );
+});
+
+test('exclusão de mensagem exige pedido explícito e respeita negação', () => {
+  assert.equal(explicitlyRequestsMessageDeletion('Apague a mensagem de aviso em #geral'), true);
+  assert.equal(explicitlyRequestsMessageDeletion('exclui https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678'), true);
+  assert.equal(explicitlyRequestsMessageDeletion('Não apague a mensagem fixada'), false);
+  assert.equal(explicitlyRequestsMessageDeletion('Fixe a mensagem de regras'), false);
+  assert.equal(explicitlyRequestsMessageDeletion('Apague o cargo Ligeirinho'), false);
+});
+
+test('extrai links de mensagens do Discord sem duplicar', () => {
+  const link = 'https://discord.com/channels/123456789012345678/223456789012345678/323456789012345678';
+  assert.deepEqual(parseDiscordMessageLinks(`edite ${link} e ${link}`), [{ guildId: '123456789012345678', channelId: '223456789012345678', messageId: '323456789012345678' }]);
+  assert.equal(parseDiscordMessageLinks('https://ptb.discord.com/channels/123456789012345678/223456789012345678/423456789012345678').length, 1);
+  assert.deepEqual(parseDiscordMessageLinks('sem links aqui'), []);
+});
+
+test('só anexa mensagens ao retrato quando o pedido fala de mensagens', () => {
+  assert.equal(requestMentionsMessages('Envie um aviso em #anuncios'), true);
+  assert.equal(requestMentionsMessages('fixa a msg de regras'), true);
+  assert.equal(requestMentionsMessages('Crie um canal de voz chamado Treino'), false);
+  assert.equal(requestMentionsMessages('Por que o cargo X não vê a categoria?'), false);
+});
+
+test('detecta menções em massa', () => {
+  assert.equal(containsMassMention('Atenção @everyone'), true);
+  assert.equal(containsMassMention('Atenção @here!'), true);
+  assert.equal(containsMassMention('email@everyonemail.com'), false);
 });

@@ -88,7 +88,7 @@ export type DiscordAction =
       permissions: SafeRolePermission[];
       reason: string;
     }
-  | { type: 'edit_channel'; channelId: string; changes: { name?: string; topic?: string | null; nsfw?: boolean; rateLimitPerUser?: number; userLimit?: number; bitrate?: number; parentId?: string | null }; reason: string }
+  | { type: 'edit_channel'; channelId: string; changes: { name?: string; topic?: string | null; nsfw?: boolean; rateLimitPerUser?: number; userLimit?: number; bitrate?: number; parentId?: string | null; position?: number }; reason: string }
   | { type: 'edit_role'; roleId: string; changes: { name?: string; permissions?: SafeRolePermission[]; color?: number; hoist?: boolean; mentionable?: boolean }; reason: string }
   | { type: 'set_member_role'; memberId: string; roleId: string; assigned: boolean; reason: string }
   | { type: 'delete_channel'; channelId: string; reason: string }
@@ -116,7 +116,27 @@ export type DiscordAction =
       categoryId: string | null;
       privateToRequester: boolean;
       reason: string;
-    };
+    }
+  | {
+      type: 'create_voice_channel';
+      name: string;
+      categoryId: string | null;
+      privateToRequester: boolean;
+      userLimit?: number;
+      bitrate?: number;
+      reason: string;
+    }
+  | { type: 'edit_category'; categoryId: string; changes: { name?: string; position?: number }; reason: string }
+  | { type: 'send_message'; channelId: string; content?: string; embed?: MessageEmbedInput; notifyMentions: boolean; reason: string }
+  | { type: 'edit_message'; channelId: string; messageId: string; content?: string; embed?: MessageEmbedInput | null; reason: string }
+  | { type: 'delete_message'; channelId: string; messageId: string; reason: string }
+  | { type: 'pin_message'; channelId: string; messageId: string; pinned: boolean; reason: string };
+
+export interface MessageEmbedInput {
+  title?: string;
+  description?: string;
+  color?: number;
+}
 
 export interface ProposedPlan {
   summary: string;
